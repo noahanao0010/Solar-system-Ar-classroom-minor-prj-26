@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+#ar-container {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px;
+}
+
+#ar-container button {
+  border: 1px solid rgba(69, 229, 255, 0.6);
+  border-radius: 12px;
+  padding: 10px 20px;
+  background: #102b43;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 13px;
+  box-shadow: 0 4px 14px rgba(69, 229, 255, 0.25);
+  transition: all 0.2s ease;
+}
+
+#ar-container button:hover {
+  background: #17496a;
+  transform: translateY(-1px);
+}
+
+#ar-container button:focus-visible {
+  outline: 3px solid #45e5ff;
+  outline-offset: 3px;
+}
+
+@keyframes arDeviceSweep {
+  0% {
+    transform: translateX(-30px) rotate(-10deg);
+  }
+  50% {
+    transform: translateX(30px) rotate(10deg);
+  }
+  100% {
+    transform: translateX(-30px) rotate(-10deg);
+  }
+}
+
+@keyframes arBeamPulse {
+  0% {
+    opacity: 0.25;
+    transform: scale(0.88);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 0.25;
+    transform: scale(0.88);
+  }
+}
+
+@keyframes arDotRadar {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+.animate-ar-sweep {
+  animation: arDeviceSweep 3.2s ease-in-out infinite;
+}
+
+.animate-ar-beam {
+  animation: arBeamPulse 2s ease-in-out infinite;
+}
+
+.animate-ar-radar {
+  animation: arDotRadar 2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+}
+
+@keyframes arCardPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.3), 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 25px 6px rgba(56, 189, 248, 0.65), 0 25px 30px -5px rgba(0, 0, 0, 0.7);
+    transform: scale(1.02);
+  }
+}
+
+.animate-card-pulse {
+  animation: arCardPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

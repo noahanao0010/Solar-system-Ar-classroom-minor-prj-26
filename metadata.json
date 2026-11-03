@@ -1,0 +1,6 @@
+{
+  "name": "AR Smart Classroom - 3D Solar System & WebAR Learning",
+  "description": "Interactive 3D Solar System, Planet Explorer, WebXR/Camera AR placement, Missions, 5-question Quiz Centre, and Teacher Mode for web and mobile.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
