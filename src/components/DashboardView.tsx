@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Trophy,
   Cpu,
+  Rocket,
 } from 'lucide-react';
 import { useClassroom, AppView } from '../context/ClassroomContext';
 import { PLANETS_DATA, ORDERED_PLANETS } from '../data/planetsData';
@@ -318,12 +319,70 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
+      {/* Satellites, Rockets & Spacecraft Fleet Showcase */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="p-1.5 rounded-lg bg-amber-500/20 text-amber-300">
+                <Rocket className="w-4 h-4" />
+              </span>
+              <h3 className="text-base font-bold text-white">Satellites, Rockets & Deep Space Fleet</h3>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Inspect humanity's greatest orbital laboratories, Apollo landers, and interstellar probes in 3D & WebAR
+            </p>
+          </div>
+          <button
+            onClick={() => handleNavigate('cameraAR')}
+            className="text-xs font-semibold text-amber-400 hover:text-amber-300 flex items-center gap-1"
+          >
+            <span>Project Fleet in AR</span>
+            <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {[
+            { id: 'iss', name: 'ISS Station', agency: 'NASA / International', badge: 'Satellite', color: '#38bdf8' },
+            { id: 'saturn-v', name: 'Saturn V', agency: 'Apollo Moon Rocket', badge: 'Rocket', color: '#f8fafc' },
+            { id: 'starship', name: 'Starship', agency: 'SpaceX Next-Gen', badge: 'Rocket', color: '#cbd5e1' },
+            { id: 'jwst', name: 'James Webb', agency: 'NASA / ESA / CSA', badge: 'Observatory', color: '#f59e0b' },
+            { id: 'apollo-lander', name: 'Apollo Lander', agency: 'Eagle 1969', badge: 'Spacecraft', color: '#eab308' },
+            { id: 'mars-rover', name: 'Perseverance', agency: 'Mars Astrobiology', badge: 'Rover', color: '#f87171' },
+          ].map(item => (
+            <div
+              key={item.id}
+              onClick={() => handleNavigate('cameraAR')}
+              className="group p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 hover:border-amber-500/50 cursor-pointer transition-all hover:scale-105 flex flex-col justify-between gap-2"
+            >
+              <div className="flex items-center justify-between">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                  {item.badge}
+                </span>
+              </div>
+              <div>
+                <div className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">
+                  {item.name}
+                </div>
+                <div className="text-[10px] text-slate-400 truncate">{item.agency}</div>
+              </div>
+              <div className="text-[10px] font-semibold text-amber-400/80 flex items-center gap-1 mt-1">
+                <span>View in AR</span>
+                <ArrowRight className="w-2.5 h-2.5" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Quick Planet Selector Carousel */}
       <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-base font-bold text-white">Solar System Worlds</h3>
-            <p className="text-xs text-slate-400">Select any planet to jump straight into its 3D examination</p>
+            <p className="text-xs text-slate-400">Select any planet to jump straight into its 3D examination & sound</p>
           </div>
           <button
             onClick={() => handleNavigate('solarSystem')}
@@ -341,7 +400,11 @@ export const DashboardView: React.FC = () => {
             return (
               <button
                 key={id}
-                onClick={() => handleNavigate('explorer', id)}
+                onClick={() => {
+                  soundEffects.playPlanetSound(id);
+                  soundEffects.speakPlanet(id);
+                  handleNavigate('explorer', id);
+                }}
                 className={`p-3 rounded-xl border text-center transition-all flex flex-col items-center justify-between gap-2 hover:scale-105 ${
                   isExplored
                     ? 'bg-slate-800/80 border-slate-700 hover:border-sky-500'

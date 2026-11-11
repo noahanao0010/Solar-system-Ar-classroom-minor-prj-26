@@ -15,9 +15,11 @@ import {
   LayoutDashboard,
   Sparkles,
   Cpu,
+  Smartphone,
 } from 'lucide-react';
 import { useClassroom, AppView } from '../context/ClassroomContext';
 import { soundEffects } from '../utils/soundEffects';
+import { useGyroscope } from '../hooks/useGyroscope';
 
 export const Navbar: React.FC = () => {
   const {
@@ -29,6 +31,7 @@ export const Navbar: React.FC = () => {
   } = useClassroom();
 
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const { isActive: isGyroActive, toggleGyro } = useGyroscope();
 
   const navItems: { view: AppView; label: string; icon: React.ReactNode; badge?: string }[] = [
     { view: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
@@ -150,6 +153,19 @@ export const Navbar: React.FC = () => {
                 • Lvl {progress.level}
               </span>
             </div>
+
+            {/* Gyroscope Global Motion Toggle */}
+            <button
+              onClick={toggleGyro}
+              className={`p-2 rounded-lg border transition-all ${
+                isGyroActive
+                  ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 shadow-sm shadow-emerald-500/20'
+                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+              title={isGyroActive ? 'Device Gyroscope Motion: Active (Tilt phone or move mouse)' : 'Enable Device Gyroscope Motion'}
+            >
+              <Smartphone className={`w-4 h-4 ${isGyroActive ? 'text-emerald-400' : 'text-slate-400'}`} />
+            </button>
 
             {/* Audio Toggle */}
             <button

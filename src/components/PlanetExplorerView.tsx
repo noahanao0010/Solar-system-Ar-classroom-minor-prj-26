@@ -4,8 +4,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { useClassroom } from '../context/ClassroomContext';
 import { PLANETS_DATA, ORDERED_PLANETS } from '../data/planetsData';
+import { GALAXIES_DATA, ORDERED_GALAXIES, GalaxyInfo } from '../data/galaxiesData';
 import { PlanetId } from '../types/astronomy';
 import { getPlanetTexture, getRingTexture } from '../utils/textureGenerator';
+import { create3DGalaxy } from '../utils/galaxyGenerator';
 import { soundEffects } from '../utils/soundEffects';
 import {
   Volume2,
@@ -21,7 +23,18 @@ import {
   Plus,
   Sparkles,
   CheckCircle2,
+  Orbit,
+  Eye,
+  RotateCcw,
+  Compass,
+  Smartphone,
 } from 'lucide-react';
+import { deviceGyro } from '../utils/deviceOrientation';
+import { useGyroscope } from '../hooks/useGyroscope';
+
+// Pre-allocated reusable math objects
+const _gyroEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _gyroQuat = new THREE.Quaternion();
 
 export const PlanetExplorerView: React.FC = () => {
   const {
@@ -34,6 +47,13 @@ export const PlanetExplorerView: React.FC = () => {
   } = useClassroom();
 
   const mountRef = useRef<HTMLDivElement>(null);
+
+  // Explorer Master Scope: 'planets' | 'galaxies'
+  const [explorerScope, setExplorerScope] = useState<'planets' | 'galaxies'>('planets');
+  const [selectedGalaxyId, setSelectedGalaxyId] = useState<string>('milky-way');
+  const [galaxyTab, setGalaxyTab] = useState<'core' | 'arms' | 'halo' | 'merger'>('core');
+
+  // Planet explorer state
   const [viewMode, setViewMode] = useState<'exterior' | 'interior' | 'atmosphere'>('exterior');
   const [earthWeight, setEarthWeight] = useState<number>(50); // kg
   const [weightUnit, setWeightUnit] = useState<'kg' | 'lbs'>('kg');
@@ -41,27 +61,43 @@ export const PlanetExplorerView: React.FC = () => {
   const [noteText, setNoteText] = useState<string>('');
   const [noteSaved, setNoteSaved] = useState<boolean>(false);
 
+  // Device Gyroscope & Motion Tracking
+  const {
+    isActive: isGyroActive,
+    isHardware: isGyroHardware,
+    toggleGyro,
+    calibrate: calibrateGyro,
+    sensitivity: gyroSensitivity,
+    setSensitivity: setGyroSensitivity,
+  } = useGyroscope();
+
   // Three.js refs
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const planetMeshRef = useRef<THREE.Mesh | null>(null);
   const interiorGroupRef = useRef<THREE.Group | null>(null);
   const atmosphereMeshRef = useRef<THREE.Mesh | null>(null);
   const ringMeshRef = useRef<THREE.Mesh | null>(null);
+  const currentGalaxyGroupRef = useRef<THREE.Group | null>(null);
   const animationFrameRef = useRef<number>(0);
 
   const planet = PLANETS_DATA[selectedPlanetId];
+  const galaxy: GalaxyInfo = GALAXIES_DATA[selectedGalaxyId] || GALAXIES_DATA['milky-way'];
 
   // Mark explored on mount/change
   useEffect(() => {
-    markPlanetExplored(selectedPlanetId);
-  }, [selectedPlanetId]);
+    if (explorerScope === 'planets') {
+      markPlanetExplored(selectedPlanetId);
+    }
+  }, [selectedPlanetId, explorerScope]);
 
-  // Setup Three.js scene
+  // Setup Three.js scene (Rebuilds when switching between planets and galaxy scope)
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
 
-    // Detect software WebGL
     const isSoftwareGl = (() => {
       const gl = document.createElement('canvas').getContext('webgl2');
       if (!gl) return true;
@@ -73,16 +109,21 @@ export const PlanetExplorerView: React.FC = () => {
     })();
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x060919);
+    scene.background = new THREE.Color(0x040612);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(
       45,
       container.clientWidth / container.clientHeight,
       0.1,
-      100
+      200
     );
-    camera.position.set(0, 1.5, 6.5);
+    if (explorerScope === 'planets') {
+      camera.position.set(0, 1.5, 6.5);
+    } else {
+      camera.position.set(0, 7.5, 12);
+    }
+    cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({
       antialias: !isSoftwareGl,
@@ -93,142 +134,121 @@ export const PlanetExplorerView: React.FC = () => {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.25;
+    rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
-    // Environment
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
 
-    // Lighting
-    const keyLight = new THREE.DirectionalLight(0xffffff, 2.8);
-    keyLight.position.set(5, 3, 5);
-    scene.add(keyLight);
-
-    const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.6);
-    fillLight.position.set(-5, -2, -3);
-    scene.add(fillLight);
-
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
-    scene.add(ambientLight);
-
-    // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = !isSoftwareGl;
     controls.dampingFactor = 0.05;
-    controls.minDistance = 3.0;
-    controls.maxDistance = 14;
+    controls.minDistance = explorerScope === 'planets' ? 2.5 : 3.0;
+    controls.maxDistance = explorerScope === 'planets' ? 14 : 35;
+    controlsRef.current = controls;
 
-    // Contact Ground Shadow
-    const shadowGeo = new THREE.PlaneGeometry(6, 6);
-    const shadowCanvas = document.createElement('canvas');
-    shadowCanvas.width = 128;
-    shadowCanvas.height = 128;
-    const sCtx = shadowCanvas.getContext('2d')!;
-    const radGrad = sCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
-    radGrad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
-    radGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.2)');
-    radGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    sCtx.fillStyle = radGrad;
-    sCtx.fillRect(0, 0, 128, 128);
-    const shadowTex = new THREE.CanvasTexture(shadowCanvas);
-    const shadowMat = new THREE.MeshBasicMaterial({
-      map: shadowTex,
-      transparent: true,
-      depthWrite: false,
-    });
-    const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
-    shadowPlane.rotation.x = -Math.PI / 2;
-    shadowPlane.position.y = -2.2;
-    scene.add(shadowPlane);
+    if (explorerScope === 'planets') {
+      // -------------------------------------------------------------
+      // Planet 3D Scene Architecture
+      // -------------------------------------------------------------
+      const keyLight = new THREE.DirectionalLight(0xffffff, 2.8);
+      keyLight.position.set(5, 3, 5);
+      scene.add(keyLight);
 
-    // Main Planet Group
-    const planetGroup = new THREE.Group();
-    planetGroup.rotation.z = THREE.MathUtils.degToRad(planet.tiltDegrees);
-    scene.add(planetGroup);
+      const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.6);
+      fillLight.position.set(-5, -2, -3);
+      scene.add(fillLight);
 
-    // 1. Exterior Surface Mesh
-    const sphereRadius = 1.8;
-    const sphereGeo = new THREE.SphereGeometry(sphereRadius, 48, 48);
-    const pTex = getPlanetTexture(selectedPlanetId);
-    const pMat = new THREE.MeshStandardMaterial({
-      map: pTex,
-      roughness: 0.6,
-      metalness: 0.1,
-    });
-    const planetMesh = new THREE.Mesh(sphereGeo, pMat);
-    planetGroup.add(planetMesh);
-    planetMeshRef.current = planetMesh;
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+      scene.add(ambientLight);
 
-    // 2. Rings for Saturn / Uranus
-    if (planet.hasRings) {
-      const ringType = selectedPlanetId === 'uranus' ? 'uranus' : 'saturn';
-      const ringGeo = new THREE.RingGeometry(sphereRadius * 1.35, sphereRadius * 2.4, 64);
-      ringGeo.rotateX(Math.PI / 2);
-      const ringTex = getRingTexture(ringType);
-      const ringMat = new THREE.MeshStandardMaterial({
-        map: ringTex,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.9,
+      // Starfield
+      const starCount = isSoftwareGl ? 500 : 1200;
+      const starGeo = new THREE.BufferGeometry();
+      const starPos = new Float32Array(starCount * 3);
+      for (let i = 0; i < starCount * 3; i += 3) {
+        starPos[i] = (Math.random() - 0.5) * 100;
+        starPos[i + 1] = (Math.random() - 0.5) * 100;
+        starPos[i + 2] = (Math.random() - 0.5) * 100;
+      }
+      starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+      const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.8, transparent: true, opacity: 0.8 });
+      scene.add(new THREE.Points(starGeo, starMat));
+
+      // Planet Mesh
+      const pGeo = new THREE.SphereGeometry(1.5, 48, 48);
+      const pTex = getPlanetTexture(selectedPlanetId);
+      const pMat = new THREE.MeshStandardMaterial({
+        map: pTex,
+        roughness: 0.65,
+        metalness: 0.1,
       });
-      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-      planetGroup.add(ringMesh);
-      ringMeshRef.current = ringMesh;
+      const planetMesh = new THREE.Mesh(pGeo, pMat);
+      planetMesh.rotation.z = THREE.MathUtils.degToRad(planet.tiltDegrees);
+      scene.add(planetMesh);
+      planetMeshRef.current = planetMesh;
+
+      // Rings
+      if (planet.hasRings) {
+        const ringType = selectedPlanetId === 'uranus' ? 'uranus' : 'saturn';
+        const rGeo = new THREE.RingGeometry(2.1, 3.8, 64);
+        rGeo.rotateX(Math.PI / 2);
+        const rTex = getRingTexture(ringType);
+        const rMat = new THREE.MeshStandardMaterial({
+          map: rTex,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.9,
+          roughness: 0.6,
+        });
+        const ringMesh = new THREE.Mesh(rGeo, rMat);
+        planetMesh.add(ringMesh);
+        ringMeshRef.current = ringMesh;
+      }
+
+      // Interior Layers Group
+      const interiorGroup = new THREE.Group();
+      interiorGroup.visible = false;
+      scene.add(interiorGroup);
+      interiorGroupRef.current = interiorGroup;
+
+      const layerRadii = [1.25, 0.85, 0.45];
+      planet.layers.forEach((layer, idx) => {
+        const lRadius = layerRadii[idx] || 0.4;
+        const lGeo = new THREE.SphereGeometry(lRadius, 32, 32);
+        const lMat = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(layer.color),
+          roughness: 0.5,
+          metalness: 0.3,
+        });
+        const lMesh = new THREE.Mesh(lGeo, lMat);
+        interiorGroup.add(lMesh);
+      });
+
+      // Atmosphere Glow
+      const atmGeo = new THREE.SphereGeometry(1.56, 32, 32);
+      const atmMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(planet.accentColor),
+        transparent: true,
+        opacity: 0.25,
+        side: THREE.BackSide,
+      });
+      const atmosphereMesh = new THREE.Mesh(atmGeo, atmMat);
+      scene.add(atmosphereMesh);
+      atmosphereMeshRef.current = atmosphereMesh;
+    } else {
+      // -------------------------------------------------------------
+      // Galaxy 3D Scene Architecture
+      // -------------------------------------------------------------
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambientLight);
+
+      const galaxyGroup = create3DGalaxy(selectedGalaxyId, isSoftwareGl ? 8000 : 22000);
+      scene.add(galaxyGroup);
+      currentGalaxyGroupRef.current = galaxyGroup;
     }
 
-    // 3. Atmospheric Outer Glow
-    const atmosGeo = new THREE.SphereGeometry(sphereRadius * 1.05, 32, 32);
-    const atmosMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(planet.accentColor),
-      transparent: true,
-      opacity: 0.25,
-      side: THREE.BackSide,
-    });
-    const atmosphereMesh = new THREE.Mesh(atmosGeo, atmosMat);
-    planetGroup.add(atmosphereMesh);
-    atmosphereMeshRef.current = atmosphereMesh;
-
-    // 4. Interior Cutaway Layers (Concentric cut sphere for interior mode)
-    const interiorGroup = new THREE.Group();
-    interiorGroup.visible = false;
-    interiorGroupRef.current = interiorGroup;
-    planetGroup.add(interiorGroup);
-
-    // Core layer
-    const coreGeo = new THREE.SphereGeometry(sphereRadius * 0.45, 32, 32);
-    const coreMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: 0xffaa00,
-      emissiveIntensity: 0.6,
-      roughness: 0.3,
-    });
-    const coreMesh = new THREE.Mesh(coreGeo, coreMat);
-    interiorGroup.add(coreMesh);
-
-    // Mantle layer (wireframe shell or translucent shell)
-    const mantleGeo = new THREE.SphereGeometry(sphereRadius * 0.75, 32, 32);
-    const mantleMat = new THREE.MeshStandardMaterial({
-      color: 0xf97316,
-      transparent: true,
-      opacity: 0.4,
-      wireframe: true,
-    });
-    const mantleMesh = new THREE.Mesh(mantleGeo, mantleMat);
-    interiorGroup.add(mantleMesh);
-
-    // Crust layer
-    const crustGeo = new THREE.SphereGeometry(sphereRadius * 0.98, 32, 32);
-    const crustMat = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.3,
-      wireframe: true,
-    });
-    const crustMesh = new THREE.Mesh(crustGeo, crustMat);
-    interiorGroup.add(crustMesh);
-
-    // Resize
     const handleResize = () => {
       if (!container || !renderer || !camera) return;
       const w = container.clientWidth;
@@ -239,18 +259,33 @@ export const PlanetExplorerView: React.FC = () => {
     };
     window.addEventListener('resize', handleResize);
 
-    // Render loop
     const clock = new THREE.Clock();
     function animate() {
       animationFrameRef.current = requestAnimationFrame(animate);
       const delta = clock.getDelta();
 
-      // Slow rotation
-      planetMesh.rotation.y += delta * 0.2;
-      if (atmosphereMesh) atmosphereMesh.rotation.y += delta * 0.15;
-      if (interiorGroup.visible) interiorGroup.rotation.y += delta * 0.2;
+      if (explorerScope === 'planets') {
+        if (planetMeshRef.current) planetMeshRef.current.rotation.y += delta * 0.2;
+        if (atmosphereMeshRef.current) atmosphereMeshRef.current.rotation.y += delta * 0.15;
+        if (interiorGroupRef.current && interiorGroupRef.current.visible) {
+          interiorGroupRef.current.rotation.y += delta * 0.2;
+        }
+      } else {
+        if (currentGalaxyGroupRef.current) {
+          currentGalaxyGroupRef.current.rotation.y += delta * 0.06;
+        }
+      }
 
       controls.update();
+
+      // Dynamic Gyroscope & Motion Parallax
+      const gyro = deviceGyro.getState();
+      if (gyro.isActive) {
+        _gyroEuler.set(gyro.pitch * 0.45, gyro.yaw * 0.5, gyro.roll * 0.35, 'YXZ');
+        _gyroQuat.setFromEuler(_gyroEuler);
+        camera.quaternion.multiply(_gyroQuat);
+      }
+
       renderer.render(scene, camera);
     }
     animate();
@@ -264,7 +299,7 @@ export const PlanetExplorerView: React.FC = () => {
         container.removeChild(renderer.domElement);
       }
     };
-  }, [selectedPlanetId]);
+  }, [selectedPlanetId, explorerScope, selectedGalaxyId]);
 
   // Update view mode display
   useEffect(() => {
@@ -291,32 +326,36 @@ export const PlanetExplorerView: React.FC = () => {
     }
   }, [viewMode]);
 
-  // Audio guide speech synthesis
-  const toggleSpeechNarration = () => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-      return;
-    }
-
-    const narrationText = `${planet.name}. ${planet.title}. ${planet.tagline}. ${planet.overview} It has an equatorial diameter of ${planet.diameterKm.toLocaleString()} kilometers, and its surface gravity is ${planet.surfaceGravityMs2} meters per second squared.`;
-    const utterance = new SpeechSynthesisUtterance(narrationText);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-
-    window.speechSynthesis.speak(utterance);
-    setIsSpeaking(true);
-  };
-
   const handleSelectPlanet = (id: PlanetId) => {
     setSelectedPlanetId(id);
     soundEffects.playPlanetSound(id);
     soundEffects.speakPlanet(id);
+  };
+
+  const handleSelectGalaxy = (gId: string) => {
+    setSelectedGalaxyId(gId);
+    soundEffects.playGalaxySound(gId);
+    soundEffects.speakGalaxy(gId);
+  };
+
+  // Camera presets for Galaxy
+  const setGalaxyViewPreset = (preset: 'face-on' | 'edge-on' | 'core' | 'overview') => {
+    soundEffects.playClick();
+    if (!cameraRef.current || !controlsRef.current) return;
+
+    if (preset === 'face-on') {
+      cameraRef.current.position.set(0, 14, 0.1);
+      controlsRef.current.target.set(0, 0, 0);
+    } else if (preset === 'edge-on') {
+      cameraRef.current.position.set(14, 0.4, 0);
+      controlsRef.current.target.set(0, 0, 0);
+    } else if (preset === 'core') {
+      cameraRef.current.position.set(0, 1.2, 3.2);
+      controlsRef.current.target.set(0, 0, 0);
+    } else {
+      cameraRef.current.position.set(0, 7.5, 12);
+      controlsRef.current.target.set(0, 0, 0);
+    }
   };
 
   const handlePrevPlanet = () => {
@@ -331,7 +370,6 @@ export const PlanetExplorerView: React.FC = () => {
     handleSelectPlanet(ORDERED_PLANETS[nextIdx]);
   };
 
-  // Weight calculation
   const calculatedWeight = Math.round(
     (earthWeight * (planet.surfaceGravityMs2 / 9.807)) * 10
   ) / 10;
@@ -346,348 +384,597 @@ export const PlanetExplorerView: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full pb-16 px-3 sm:px-6 lg:px-8 max-w-7xl mx-auto space-y-6 pt-4">
-      {/* Top Selector Bar */}
-      <div className="flex items-center justify-between gap-2 overflow-x-auto pb-2 scrollbar-none">
-        <div className="flex items-center gap-1.5">
+    <div className="min-h-full pb-16 px-3 sm:px-6 lg:px-8 max-w-7xl mx-auto space-y-5 pt-4">
+      {/* Primary Scope Toggle: Planets vs Galaxies */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-xl">
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950 border border-slate-800">
           <button
-            onClick={() => handleSelectPlanet('sun')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-              selectedPlanetId === 'sun'
-                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
-                : 'bg-slate-900 border border-slate-800 text-amber-300 hover:bg-slate-800'
+            onClick={() => {
+              soundEffects.playClick();
+              setExplorerScope('planets');
+              soundEffects.playPlanetSound(selectedPlanetId);
+              soundEffects.speakPlanet(selectedPlanetId);
+            }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+              explorerScope === 'planets'
+                ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
-            ☀️ The Sun
+            <Orbit className="w-4 h-4" />
+            <span>Solar System Worlds</span>
           </button>
 
-          {ORDERED_PLANETS.map(id => {
-            const isSelected = selectedPlanetId === id;
-            const p = PLANETS_DATA[id];
-            return (
-              <button
-                key={id}
-                onClick={() => handleSelectPlanet(id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
-                  isSelected
-                    ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
-                    : 'bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800'
-                }`}
-              >
-                <span
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{ backgroundColor: p.color }}
-                />
-                <span>{p.name}</span>
-              </button>
-            );
-          })}
+          <button
+            onClick={() => {
+              soundEffects.playClick();
+              setExplorerScope('galaxies');
+              soundEffects.playGalaxySound(selectedGalaxyId);
+              soundEffects.speakGalaxy(selectedGalaxyId);
+            }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+              explorerScope === 'galaxies'
+                ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-md shadow-purple-500/20'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>Deep Space Galaxies</span>
+          </button>
         </div>
 
-        {/* View in AR Button */}
-        <button
-          onClick={() => {
-            soundEffects.playClick();
-            setCurrentView('cameraAR');
-          }}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-semibold text-xs shadow-md shadow-pink-600/30 whitespace-nowrap transition-all flex-shrink-0"
-        >
-          <Camera className="w-3.5 h-3.5" />
-          <span>Project in AR</span>
-        </button>
+        {explorerScope === 'planets' ? (
+          <button
+            onClick={() => {
+              soundEffects.playClick();
+              setCurrentView('cameraAR');
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-semibold text-xs shadow-md shadow-pink-600/30 whitespace-nowrap transition-all"
+          >
+            <Camera className="w-4 h-4" />
+            <span>Project Planet in AR</span>
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              soundEffects.playGalaxySound(selectedGalaxyId);
+              soundEffects.speakGalaxy(selectedGalaxyId);
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-xs border border-slate-700 shadow-md transition-all"
+          >
+            <Volume2 className="w-4 h-4" />
+            <span>Replay Cosmic Voice</span>
+          </button>
+        )}
       </div>
 
-      {/* Main Split Layout: 3D Canvas on Left, Rich Fact Sheets on Right */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: 3D Planet Viewport */}
-        <div className="lg:col-span-7 flex flex-col space-y-3">
-          <div className="relative w-full h-[380px] sm:h-[480px] rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 shadow-xl">
-            {/* Three.js Canvas Container */}
-            <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
-
-            {/* Top View Mode Switcher */}
-            <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur-md p-1 rounded-xl border border-slate-800 shadow-md">
-              <button
-                onClick={() => {
-                  soundEffects.playClick();
-                  setViewMode('exterior');
-                }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
-                  viewMode === 'exterior'
-                    ? 'bg-sky-500 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                <span>Exterior</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  soundEffects.playClick();
-                  setViewMode('interior');
-                }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
-                  viewMode === 'interior'
-                    ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>Internal Layers</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  soundEffects.playClick();
-                  setViewMode('atmosphere');
-                }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
-                  viewMode === 'atmosphere'
-                    ? 'bg-indigo-500 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Wind className="w-3.5 h-3.5" />
-                <span>Atmosphere</span>
-              </button>
-            </div>
-
-            {/* Top Right Audio Guide Button */}
-            <div className="absolute top-3 right-3 z-20">
-              <button
-                onClick={toggleSpeechNarration}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl backdrop-blur-md border text-xs font-medium transition-all shadow-md ${
-                  isSpeaking
-                    ? 'bg-amber-500 text-slate-950 border-amber-400 font-bold animate-pulse'
-                    : 'bg-slate-900/90 border-slate-800 text-slate-200 hover:bg-slate-800'
-                }`}
-              >
-                {isSpeaking ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                <span>{isSpeaking ? 'Stop Audio Guide' : 'Listen Guide'}</span>
-              </button>
-            </div>
-
-            {/* Bottom Floating Navigation Arrows */}
-            <div className="absolute bottom-3 inset-x-3 z-20 flex items-center justify-between pointer-events-none">
-              <button
-                onClick={handlePrevPlanet}
-                className="pointer-events-auto p-2 rounded-xl bg-slate-900/80 backdrop-blur-md border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 transition-all shadow-md"
-                title="Previous Planet"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-
-              <div className="px-3 py-1 rounded-full bg-slate-900/80 backdrop-blur-md border border-slate-800 text-[11px] font-semibold text-slate-300">
-                Axial Tilt: {planet.tiltDegrees}°
-              </div>
-
-              <button
-                onClick={handleNextPlanet}
-                className="pointer-events-auto p-2 rounded-xl bg-slate-900/80 backdrop-blur-md border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 transition-all shadow-md"
-                title="Next Planet"
-              >
-                <ArrowRight className="w-4 h-4" />
-              </button>
+      {/* =========================================================================
+          MODE 1: DEEP SPACE GALAXIES EXPLORER
+         ========================================================================= */}
+      {explorerScope === 'galaxies' && (
+        <div className="space-y-5">
+          {/* Galaxy Selection Shelf */}
+          <div className="bg-slate-900/80 border border-slate-800 p-3 rounded-2xl">
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+              {ORDERED_GALAXIES.map(gId => {
+                const g = GALAXIES_DATA[gId];
+                const isSelected = selectedGalaxyId === gId;
+                return (
+                  <button
+                    key={gId}
+                    onClick={() => handleSelectGalaxy(gId)}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs whitespace-nowrap transition-all border ${
+                      isSelected
+                        ? 'bg-gradient-to-r from-purple-600 to-indigo-600 border-purple-400 text-white font-bold shadow-lg shadow-purple-600/30 scale-[1.02]'
+                        : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white font-medium'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: g.accentColor }} />
+                    <span>{g.name}</span>
+                    <span className="text-[10px] text-slate-400 font-normal">({g.type.split(' ')[0]})</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {/* Interactive Weight on this Planet Calculator */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Calculator className="w-4 h-4 text-sky-400" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-                  Planetary Gravity & Weight Calculator
-                </h3>
-              </div>
-              <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg text-[10px]">
-                <button
-                  onClick={() => setWeightUnit('kg')}
-                  className={`px-2 py-0.5 rounded font-semibold ${
-                    weightUnit === 'kg' ? 'bg-sky-500 text-white' : 'text-slate-400'
-                  }`}
-                >
-                  KG
-                </button>
-                <button
-                  onClick={() => setWeightUnit('lbs')}
-                  className={`px-2 py-0.5 rounded font-semibold ${
-                    weightUnit === 'lbs' ? 'bg-sky-500 text-white' : 'text-slate-400'
-                  }`}
-                >
-                  LBS
-                </button>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* 3D Galaxy Canvas */}
+            <div className="lg:col-span-7 space-y-3">
+              <div className="relative w-full h-[380px] sm:h-[460px] rounded-3xl overflow-hidden bg-slate-950 border border-slate-800 shadow-2xl">
+                <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
+
+                {/* Camera presets overlay */}
+                <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 p-1 rounded-xl bg-slate-900/85 backdrop-blur-md border border-slate-800">
+                  <button
+                    onClick={() => setGalaxyViewPreset('face-on')}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800"
+                  >
+                    Face-on Spiral
+                  </button>
+                  <button
+                    onClick={() => setGalaxyViewPreset('edge-on')}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800"
+                  >
+                    Edge-on Dust
+                  </button>
+                  <button
+                    onClick={() => setGalaxyViewPreset('core')}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800"
+                  >
+                    Black Hole Core
+                  </button>
+                  <button
+                    onClick={() => setGalaxyViewPreset('overview')}
+                    className="p-1 rounded-lg text-slate-400 hover:text-white"
+                    title="Reset Angle"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Gyroscope Motion HUD */}
+                <div className="absolute top-4 right-4 z-10 flex items-center gap-1 bg-slate-900/85 backdrop-blur-md p-1 rounded-xl border border-slate-800">
+                  <button
+                    onClick={toggleGyro}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      isGyroActive
+                        ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/20'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                    title={isGyroActive ? 'Gyroscope Motion Active (Tilt phone or move mouse)' : 'Enable Gyroscope Motion'}
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>{isGyroActive ? (isGyroHardware ? 'Gyro Active' : 'Virtual Gyro') : 'Gyro Mode'}</span>
+                  </button>
+
+                  {isGyroActive && (
+                    <>
+                      <button
+                        onClick={calibrateGyro}
+                        className="px-2 py-1 rounded-md text-[11px] font-medium bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white"
+                        title="Recenter zero reference"
+                      >
+                        Recenter
+                      </button>
+                      <div className="flex items-center gap-0.5 text-[10px] text-slate-400 pl-1 border-l border-slate-800">
+                        {[1, 1.5, 2].map(s => (
+                          <button
+                            key={s}
+                            onClick={() => setGyroSensitivity(s)}
+                            className={`px-1.5 py-0.5 rounded ${
+                              gyroSensitivity === s ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {s}x
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Bottom title pill */}
+                <div className="absolute bottom-4 left-4 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-800 px-3.5 py-2 rounded-2xl shadow-lg">
+                  <div className="text-xs font-extrabold text-white">{galaxy.name}</div>
+                  <div className="text-[10px] text-purple-400 font-medium">{galaxy.type} • {galaxy.morphology}</div>
+                </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1">
-                  Your weight on Earth ({weightUnit}):
-                </label>
-                <input
-                  type="number"
-                  min="5"
-                  max="300"
-                  value={earthWeight}
-                  onChange={e => setEarthWeight(Math.max(1, Number(e.target.value)))}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white font-semibold focus:outline-none focus:border-sky-500"
-                />
+            {/* Galaxy Scientific Breakdown & Tabs */}
+            <div className="lg:col-span-5 space-y-4">
+              {/* Header Spec Card */}
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                    {galaxy.morphology}
+                  </span>
+                  <span className="text-xs text-slate-400">{galaxy.constellation}</span>
+                </div>
+
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{galaxy.name}</h1>
+                <p className="text-xs font-semibold text-amber-300">{galaxy.catalogName}</p>
+                <p className="text-xs text-slate-300 leading-relaxed">{galaxy.overview}</p>
               </div>
 
-              <div className="bg-slate-950/80 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between">
-                <div>
-                  <div className="text-[10px] text-slate-400">On {planet.name} you weigh:</div>
-                  <div className="text-lg font-extrabold text-amber-300">
-                    {calculatedWeight} {weightUnit}
+              {/* Four Metrics Grid */}
+              <div className="grid grid-cols-2 gap-2.5 text-xs">
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Diameter</span>
+                  <div className="font-bold text-white text-sm mt-0.5">
+                    {galaxy.diameterLightYears.toLocaleString()} ly
                   </div>
                 </div>
-                <div className="text-[11px] text-slate-500 text-right">
-                  {planet.surfaceGravityMs2} m/s²
-                  <br />
-                  ({Math.round((planet.surfaceGravityMs2 / 9.807) * 100)}% of Earth)
+
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Distance from Earth</span>
+                  <div className="font-bold text-white text-sm mt-0.5">
+                    {galaxy.distanceLightYears}
+                  </div>
                 </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Estimated Stars</span>
+                  <div className="font-bold text-amber-300 text-sm mt-0.5">
+                    {galaxy.estimatedStars}
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Supermassive Black Hole</span>
+                  <div className="font-bold text-sky-300 text-sm mt-0.5 truncate">
+                    {galaxy.blackHoleMass}
+                  </div>
+                </div>
+              </div>
+
+              {/* Dissector Tabs */}
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3">
+                <div className="flex items-center gap-1 p-0.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                  <button
+                    onClick={() => setGalaxyTab('core')}
+                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                      galaxyTab === 'core' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Core & Black Hole
+                  </button>
+                  <button
+                    onClick={() => setGalaxyTab('arms')}
+                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                      galaxyTab === 'arms' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Arms & Stars
+                  </button>
+                  <button
+                    onClick={() => setGalaxyTab('halo')}
+                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                      galaxyTab === 'halo' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Halo & Dark Matter
+                  </button>
+                  <button
+                    onClick={() => setGalaxyTab('merger')}
+                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                      galaxyTab === 'merger' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Evolution
+                  </button>
+                </div>
+
+                {galaxyTab === 'core' && (
+                  <div className="space-y-2 text-xs text-slate-300 animate-in fade-in duration-150">
+                    <p className="font-semibold text-white">Central Black Hole & Bulge:</p>
+                    <p>{galaxy.blackHoleMass} governs the central galactic orbital dynamics.</p>
+                    <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 text-[11px]">
+                      <span className="text-amber-400 font-bold block mb-1">Stellar Velocity:</span>
+                      {galaxy.scientificDetails.rotationVelocity}
+                    </div>
+                  </div>
+                )}
+
+                {galaxyTab === 'arms' && (
+                  <div className="space-y-2 text-xs text-slate-300 animate-in fade-in duration-150">
+                    <p className="font-semibold text-white">Spiral Arms & Star Formation:</p>
+                    <p>{galaxy.scientificDetails.armCount > 0 ? `${galaxy.scientificDetails.armCount} primary spiral arm structures with compression density waves.` : 'Non-standard shockwave ring or starburst outflow configuration.'}</p>
+                    <p className="text-[11px] text-slate-400">{galaxy.keyFeatures[0]}</p>
+                  </div>
+                )}
+
+                {galaxyTab === 'halo' && (
+                  <div className="space-y-2 text-xs text-slate-300 animate-in fade-in duration-150">
+                    <p className="font-semibold text-white">Stellar Halo & Dark Matter:</p>
+                    <p>{galaxy.scientificDetails.stellarHalo}</p>
+                    <p className="text-[11px] text-slate-400">{galaxy.scientificDetails.metallicity}</p>
+                  </div>
+                )}
+
+                {galaxyTab === 'merger' && (
+                  <div className="space-y-2 text-xs text-slate-300 animate-in fade-in duration-150">
+                    <p className="font-semibold text-white">Cosmic Merger History:</p>
+                    <p>{galaxy.scientificDetails.mergerStatus}</p>
+                    <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 text-[11px] text-amber-300">
+                      💡 {galaxy.funFacts[0]}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Right: Rich Planetary Facts & Layers */}
-        <div className="lg:col-span-5 space-y-4">
-          {/* Header Card */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">
-                {planet.type} World
-              </span>
-              <span className="text-xs text-slate-400">
-                {planet.distanceFromSunKm > 0 ? `${planet.distanceFromSunKm}M km from Sun` : 'Center of System'}
-              </span>
-            </div>
+      {/* =========================================================================
+          MODE 2: SOLAR SYSTEM WORLDS EXPLORER
+         ========================================================================= */}
+      {explorerScope === 'planets' && (
+        <div className="space-y-5">
+          {/* Planet Selector Bar */}
+          <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-none">
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => handleSelectPlanet('sun')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                  selectedPlanetId === 'sun'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
+                    : 'bg-slate-900 border border-slate-800 text-amber-300 hover:bg-slate-800'
+                }`}
+              >
+                ☀️ The Sun
+              </button>
 
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{planet.name}</h1>
-            <p className="text-xs font-medium text-amber-300">{planet.title}</p>
-            <p className="text-xs text-slate-300 leading-relaxed pt-1">{planet.overview}</p>
-          </div>
-
-          {/* Key Metrics Grid */}
-          <div className="grid grid-cols-2 gap-2.5 text-xs">
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-slate-400 text-[11px]">Diameter</span>
-              <div className="font-bold text-white text-sm mt-0.5">
-                {planet.diameterKm.toLocaleString()} km
-              </div>
-            </div>
-
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-slate-400 text-[11px]">Surface Temp</span>
-              <div className="font-bold text-white text-sm mt-0.5">
-                {planet.avgTempCelsius > 0 ? `+${planet.avgTempCelsius}` : planet.avgTempCelsius}°C
-              </div>
-            </div>
-
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-slate-400 text-[11px]">Length of Day</span>
-              <div className="font-bold text-white text-sm mt-0.5">
-                {Math.abs(planet.rotationPeriodHours)} hrs
-              </div>
-            </div>
-
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-slate-400 text-[11px]">Orbital Year</span>
-              <div className="font-bold text-white text-sm mt-0.5">
-                {planet.orbitPeriodDays > 0 ? `${planet.orbitPeriodDays} days` : 'N/A'}
-              </div>
+              {ORDERED_PLANETS.map(id => {
+                const isSelected = selectedPlanetId === id;
+                const p = PLANETS_DATA[id];
+                return (
+                  <button
+                    key={id}
+                    onClick={() => handleSelectPlanet(id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
+                      isSelected
+                        ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
+                        : 'bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color }} />
+                    <span>{p.name}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {/* Internal Layers Accordion */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-amber-400" />
-              <span>Internal Structure & Layers</span>
-            </h3>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* 3D Planet Stage */}
+            <div className="lg:col-span-7 space-y-4">
+              <div className="relative w-full h-[360px] sm:h-[440px] rounded-3xl overflow-hidden bg-slate-950 border border-slate-800 shadow-2xl">
+                <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
-            <div className="space-y-2">
-              {planet.layers.map((layer, idx) => (
-                <div key={idx} className="bg-slate-950/60 border border-slate-800/80 p-2.5 rounded-xl text-xs space-y-1">
-                  <div className="flex items-center justify-between font-semibold">
-                    <span className="text-white flex items-center gap-1.5">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: layer.color }}
-                      />
-                      {layer.name}
-                    </span>
-                    <span className="text-slate-400 text-[11px]">{layer.depth}</span>
-                  </div>
-                  <div className="text-slate-400 text-[11px]">{layer.description}</div>
+                {/* View mode toggle pill */}
+                <div className="absolute top-4 left-4 z-10 flex items-center gap-1 bg-slate-900/85 backdrop-blur-md p-1 rounded-xl border border-slate-800">
+                  <button
+                    onClick={() => {
+                      soundEffects.playClick();
+                      setViewMode('exterior');
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      viewMode === 'exterior' ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>Exterior</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      soundEffects.playClick();
+                      setViewMode('interior');
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      viewMode === 'interior' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Internal Layers</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      soundEffects.playClick();
+                      setViewMode('atmosphere');
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      viewMode === 'atmosphere' ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Wind className="w-3.5 h-3.5" />
+                    <span>Atmosphere</span>
+                  </button>
                 </div>
-              ))}
-            </div>
-          </div>
 
-          {/* Atmospheric Composition */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-1.5">
-              <Wind className="w-3.5 h-3.5 text-sky-400" />
-              <span>Atmospheric Profile</span>
-            </h3>
+                {/* Gyroscope Motion HUD */}
+                <div className="absolute top-4 right-4 z-10 flex items-center gap-1 bg-slate-900/85 backdrop-blur-md p-1 rounded-xl border border-slate-800">
+                  <button
+                    onClick={toggleGyro}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      isGyroActive
+                        ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/20'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                    title={isGyroActive ? 'Gyroscope Motion Active (Tilt phone or move mouse)' : 'Enable Gyroscope Motion'}
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>{isGyroActive ? (isGyroHardware ? 'Gyro Active' : 'Virtual Gyro') : 'Gyro Mode'}</span>
+                  </button>
 
-            <div className="space-y-1.5">
-              {planet.atmosphericComposition.map((comp, idx) => (
-                <div key={idx} className="space-y-1">
-                  <div className="flex justify-between text-[11px]">
-                    <span className="text-slate-300">{comp.gas}</span>
-                    <span className="font-semibold text-sky-300">{comp.percentage}%</span>
+                  {isGyroActive && (
+                    <>
+                      <button
+                        onClick={calibrateGyro}
+                        className="px-2 py-1 rounded-md text-[11px] font-medium bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white"
+                        title="Recenter zero reference"
+                      >
+                        Recenter
+                      </button>
+                      <div className="flex items-center gap-0.5 text-[10px] text-slate-400 pl-1 border-l border-slate-800">
+                        {[1, 1.5, 2].map(s => (
+                          <button
+                            key={s}
+                            onClick={() => setGyroSensitivity(s)}
+                            className={`px-1.5 py-0.5 rounded ${
+                              gyroSensitivity === s ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {s}x
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Left/Right Planet Pager */}
+                <div className="absolute inset-y-0 inset-x-2 flex items-center justify-between pointer-events-none">
+                  <button
+                    onClick={handlePrevPlanet}
+                    className="pointer-events-auto p-2 rounded-full bg-slate-900/80 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-800 shadow-lg"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={handleNextPlanet}
+                    className="pointer-events-auto p-2 rounded-full bg-slate-900/80 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-800 shadow-lg"
+                  >
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Bottom title */}
+                <div className="absolute bottom-4 left-4 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-800 px-3.5 py-2 rounded-2xl shadow-lg">
+                  <div className="text-xs font-extrabold text-white">{planet.name}</div>
+                  <div className="text-[10px] text-amber-400 font-medium">{planet.tagline}</div>
+                </div>
+              </div>
+
+              {/* Gravity & Weight Calculator */}
+              <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Calculator className="w-4 h-4 text-sky-400" />
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                      Planetary Gravity Calculator
+                    </h3>
                   </div>
-                  <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-sky-500 to-indigo-500"
-                      style={{ width: `${Math.min(comp.percentage, 100)}%` }}
+                  <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg text-[10px]">
+                    <button
+                      onClick={() => setWeightUnit('kg')}
+                      className={`px-2 py-0.5 rounded font-semibold ${
+                        weightUnit === 'kg' ? 'bg-sky-500 text-white' : 'text-slate-400'
+                      }`}
+                    >
+                      KG
+                    </button>
+                    <button
+                      onClick={() => setWeightUnit('lbs')}
+                      className={`px-2 py-0.5 rounded font-semibold ${
+                        weightUnit === 'lbs' ? 'bg-sky-500 text-white' : 'text-slate-400'
+                      }`}
+                    >
+                      LBS
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1">
+                      Your weight on Earth ({weightUnit}):
+                    </label>
+                    <input
+                      type="number"
+                      min="5"
+                      max="300"
+                      value={earthWeight}
+                      onChange={e => setEarthWeight(Math.max(1, Number(e.target.value)))}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white font-semibold focus:outline-none focus:border-sky-500"
                     />
                   </div>
+
+                  <div className="bg-slate-950/80 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between">
+                    <div>
+                      <div className="text-[10px] text-slate-400">On {planet.name} you weigh:</div>
+                      <div className="text-lg font-extrabold text-amber-300">
+                        {calculatedWeight} {weightUnit}
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-slate-500 text-right">
+                      {planet.surfaceGravityMs2} m/s²
+                      <br />
+                      ({Math.round((planet.surfaceGravityMs2 / 9.807) * 100)}% of Earth)
+                    </div>
+                  </div>
                 </div>
-              ))}
+              </div>
             </div>
-          </div>
 
-          {/* Student Field Journal Note */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-2">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-1.5">
-              <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Log Note in Field Journal</span>
-            </h3>
+            {/* Right: Rich Planetary Facts & Layers */}
+            <div className="lg:col-span-5 space-y-4">
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                    {planet.type} World
+                  </span>
+                  <span className="text-xs text-slate-400">
+                    {planet.distanceFromSunKm > 0 ? `${planet.distanceFromSunKm}M km from Sun` : 'Center of System'}
+                  </span>
+                </div>
 
-            <textarea
-              value={noteText}
-              onChange={e => setNoteText(e.target.value)}
-              placeholder={`Write your research observation about ${planet.name}...`}
-              rows={2}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-            />
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{planet.name}</h1>
+                <p className="text-xs font-medium text-amber-300">{planet.title}</p>
+                <p className="text-xs text-slate-300 leading-relaxed pt-1">{planet.overview}</p>
+              </div>
 
-            <div className="flex items-center justify-between">
-              {noteSaved && (
-                <span className="text-[11px] text-emerald-400 font-medium flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> Note saved to journal!
+              {/* Key Metrics Grid */}
+              <div className="grid grid-cols-2 gap-2.5 text-xs">
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Diameter</span>
+                  <div className="font-bold text-white text-sm mt-0.5">
+                    {planet.diameterKm.toLocaleString()} km
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Surface Temp</span>
+                  <div className="font-bold text-white text-sm mt-0.5">
+                    {planet.avgTempCelsius > 0 ? `+${planet.avgTempCelsius}` : planet.avgTempCelsius}°C
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Length of Day</span>
+                  <div className="font-bold text-white text-sm mt-0.5">
+                    {Math.abs(planet.rotationPeriodHours)} hrs
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px]">Orbital Year</span>
+                  <div className="font-bold text-white text-sm mt-0.5">
+                    {planet.orbitPeriodDays > 0 ? `${planet.orbitPeriodDays} days` : 'N/A (Center)'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Internal Layers Dissector List */}
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-amber-400" />
+                  Internal Structure & Composition
                 </span>
-              )}
-              <div className="ml-auto">
-                <button
-                  onClick={handleSaveNote}
-                  disabled={!noteText.trim()}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1 transition-all"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Save Note</span>
-                </button>
+
+                <div className="space-y-2">
+                  {planet.layers.map((layer, idx) => (
+                    <div key={idx} className="bg-slate-950/60 border border-slate-800/80 p-3 rounded-xl space-y-1">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: layer.color }} />
+                          <span className="text-xs font-bold text-white">{layer.name}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-medium">{layer.depth}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 leading-relaxed">{layer.description}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

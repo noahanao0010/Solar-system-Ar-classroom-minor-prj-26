@@ -6,6 +6,7 @@
 import { PlanetId, SpacecraftId } from '../types/astronomy';
 import { PLANETS_DATA } from '../data/planetsData';
 import { SPACECRAFTS_DATA } from '../data/spaceCraftData';
+import { GALAXIES_DATA } from '../data/galaxiesData';
 
 let audioCtx: AudioContext | null = null;
 let ambientGain: GainNode | null = null;
@@ -558,6 +559,57 @@ export const soundEffects = {
     const sc = SPACECRAFTS_DATA[craftId];
     if (sc) {
       const narration = `${sc.name}. ${sc.tagline}. ${sc.description.split('.')[0]}.`;
+      this.speakText(narration);
+    }
+  },
+
+  playGalaxySound(galaxyId: string) {
+    if (isMuted) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const t = ctx.currentTime;
+
+    try {
+      // Deep cosmological density wave & galactic radio resonance
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      osc1.type = 'sawtooth';
+      osc1.frequency.setValueAtTime(40, t);
+      osc1.frequency.exponentialRampToValueAtTime(70, t + 0.4);
+      osc1.frequency.linearRampToValueAtTime(45, t + 1.1);
+
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(220, t);
+      osc2.frequency.linearRampToValueAtTime(330, t + 0.5);
+      osc2.frequency.exponentialRampToValueAtTime(110, t + 1.1);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(160, t);
+      filter.frequency.exponentialRampToValueAtTime(480, t + 0.35);
+      filter.frequency.exponentialRampToValueAtTime(140, t + 1.1);
+
+      gain.gain.setValueAtTime(0.12, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+
+      osc1.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc1.start(t);
+      osc2.start(t);
+      osc1.stop(t + 1.2);
+      osc2.stop(t + 1.2);
+    } catch {}
+  },
+
+  speakGalaxy(galaxyId: string) {
+    const g = GALAXIES_DATA[galaxyId];
+    if (g) {
+      const narration = `${g.name}. ${g.type}. ${g.tagline}. ${g.overview.split('.')[0]}.`;
       this.speakText(narration);
     }
   },

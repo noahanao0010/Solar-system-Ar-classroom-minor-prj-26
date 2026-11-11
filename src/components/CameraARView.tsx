@@ -8,6 +8,11 @@ import { getPlanetTexture, getRingTexture } from '../utils/textureGenerator';
 import { createSpacecraftObject } from '../utils/spaceCraftModels';
 import { soundEffects } from '../utils/soundEffects';
 import { WebXRAR } from '../ar/webxr-ar';
+import { deviceGyro } from '../utils/deviceOrientation';
+import { useGyroscope } from '../hooks/useGyroscope';
+
+const _gyroEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _gyroQuat = new THREE.Quaternion();
 import {
   Camera,
   RotateCw,
@@ -36,7 +41,20 @@ import {
   Pause,
   ChevronDown,
   ChevronUp,
+  Move,
+  History,
 } from 'lucide-react';
+
+const AR_ANCHOR_STORAGE_KEY = 'ar_smart_classroom_persistent_anchor_v1';
+
+interface SavedArAnchor {
+  modelId: ArPlaceableId;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: number;
+  rotationSpeed: number;
+  timestamp: number;
+}
 
 export const CameraARView: React.FC = () => {
   const {
@@ -55,6 +73,14 @@ export const CameraARView: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'planet' | 'satellite' | 'rocket' | 'spacecraft'>('all');
   const [selectedModel, setSelectedModel] = useState<ArPlaceableId>('earth');
 
+  // Device Gyroscope & Motion Tracking
+  const {
+    isActive: isGyroActive,
+    isHardware: isGyroHardware,
+    toggleGyro,
+    calibrate: calibrateGyro,
+  } = useGyroscope();
+
   const [isPlaced, setIsPlaced] = useState<boolean>(false);
   const [placedCount, setPlacedCount] = useState<number>(0);
   const [modelScale, setModelScale] = useState<number>(1.0);
@@ -62,12 +88,13 @@ export const CameraARView: React.FC = () => {
   const [showFactSheet, setShowFactSheet] = useState<boolean>(false);
   const [cameraPermissionGranted, setCameraPermissionGranted] = useState<boolean>(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [statusMessage, setStatusMessage] = useState<string>('Point your camera at a flat surface and tap to place');
+  const [statusMessage, setStatusMessage] = useState<string>('Point camera at floor and tap to place');
   const [isPlaneDetected, setIsPlaneDetected] = useState<boolean>(false);
   const [hitTestResult, setHitTestResult] = useState<boolean | null>(null);
   const [showMoveDevicePrompt, setShowMoveDevicePrompt] = useState<boolean>(false);
+  const [restoredFromSavedAnchor, setRestoredFromSavedAnchor] = useState<boolean>(false);
 
-  // AR Shadow settings (as explicitly requested by user)
+  // AR Shadow settings
   const [shadowsEnabled, setShadowsEnabled] = useState<boolean>(true);
   const [shadowOpacity, setShadowOpacity] = useState<number>(0.55);
   const [thrustersIgnited, setThrustersIgnited] = useState<boolean>(false);
@@ -92,6 +119,34 @@ export const CameraARView: React.FC = () => {
   const videoStreamRef = useRef<MediaStream | null>(null);
   const thrusterFlameRef = useRef<THREE.Mesh | null>(null);
   const thrusterLightRef = useRef<THREE.PointLight | null>(null);
+
+  // Touch Gesture Refs
+  const touchStartDistRef = useRef<number | null>(null);
+  const touchStartScaleRef = useRef<number>(1.0);
+  const touchLastPosRef = useRef<{ x: number; y: number } | null>(null);
+  const isDraggingRef = useRef<boolean>(false);
+  const mouseLastPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Helper to persist current anchor coordinates in localStorage
+  const persistAnchorState = (
+    modelId: ArPlaceableId,
+    pos: THREE.Vector3,
+    rot: THREE.Euler,
+    scale: number,
+    rotSpeed: number
+  ) => {
+    try {
+      const data: SavedArAnchor = {
+        modelId,
+        position: [pos.x, pos.y, pos.z],
+        rotation: [rot.x, rot.y, rot.z],
+        scale,
+        rotationSpeed: rotSpeed,
+        timestamp: Date.now(),
+      };
+      localStorage.setItem(AR_ANCHOR_STORAGE_KEY, JSON.stringify(data));
+    } catch {}
+  };
 
   // Helper to build 3D object for planets or spacecraft
   const createPlaceableObject = (id: ArPlaceableId): THREE.Group => {
@@ -125,7 +180,6 @@ export const CameraARView: React.FC = () => {
       ];
 
       miniPlanets.forEach(mp => {
-        // Orbit ring
         const oCurve = new THREE.EllipseCurve(0, 0, mp.dist, mp.dist, 0, Math.PI * 2, false, 0);
         const pts = oCurve.getPoints(64).map(p => new THREE.Vector3(p.x, 0, p.y));
         const oGeo = new THREE.BufferGeometry().setFromPoints(pts);
@@ -154,10 +208,9 @@ export const CameraARView: React.FC = () => {
         }
       });
     } else if (id in PLANETS_DATA) {
-      // Individual Planet
       group = new THREE.Group();
       const pData = PLANETS_DATA[id as PlanetId];
-      const radius = 0.2; // 20cm default AR size
+      const radius = 0.2;
       const pGeo = new THREE.SphereGeometry(radius, 48, 48);
       const pTex = getPlanetTexture(id as PlanetId);
       const pMat = new THREE.MeshStandardMaterial({
@@ -171,7 +224,6 @@ export const CameraARView: React.FC = () => {
       pMesh.receiveShadow = true;
       group.add(pMesh);
 
-      // Rings
       if (pData.hasRings) {
         const ringType = id === 'uranus' ? 'uranus' : 'saturn';
         const rGeo = new THREE.RingGeometry(radius * 1.35, radius * 2.5, 64);
@@ -221,11 +273,9 @@ export const CameraARView: React.FC = () => {
       shadowMesh.position.y = -radius * 1.02;
       group.add(shadowMesh);
     } else {
-      // Spacecraft, Satellite, or Rocket
       group = createSpacecraftObject(id as SpacecraftId);
     }
 
-    // Tag the root group with model id
     group.userData.modelId = id;
 
     // Apply shadow casting and receiving across all child meshes
@@ -250,12 +300,9 @@ export const CameraARView: React.FC = () => {
             setActiveEngine('webxr');
             return;
           }
-        } catch {
-          // WebXR not available or insecure context
-        }
+        } catch {}
       }
 
-      // Check camera stream support
       if (typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia)) {
         setArCapability('camera-stream');
         setActiveEngine('camera-stream');
@@ -267,7 +314,7 @@ export const CameraARView: React.FC = () => {
     checkCapabilities();
   }, []);
 
-  // 2. Start Camera Video Stream for Camera AR Passthrough Fallback
+  // 2. Start Camera Video Stream
   useEffect(() => {
     let active = true;
 
@@ -335,12 +382,11 @@ export const CameraARView: React.FC = () => {
     }
   }, [shadowOpacity, shadowsEnabled]);
 
-  // 3. Initialize Three.js Scene and WebXR AR instance
+  // 3. Initialize Three.js Scene, Restore Persistent Anchor & Setup Gesture Handlers
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
 
-    // Detect software WebGL
     const isSoftwareGl = (() => {
       const gl = document.createElement('canvas').getContext('webgl2');
       if (!gl) return true;
@@ -351,7 +397,6 @@ export const CameraARView: React.FC = () => {
       return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
     })();
 
-    // Scene with transparent background so camera video shines through
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
@@ -366,10 +411,10 @@ export const CameraARView: React.FC = () => {
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({
-      alpha: true, // Crucial for Camera AR passthrough!
+      alpha: true,
       antialias: !isSoftwareGl,
       powerPreference: 'high-performance',
-      preserveDrawingBuffer: true, // For AR photo snapshots
+      preserveDrawingBuffer: true,
     });
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
@@ -377,14 +422,14 @@ export const CameraARView: React.FC = () => {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
 
-    // MANDATORY SHADOW MAP ENABLING FOR FLOOR SHADOW PROJECTION
+    // Floor Shadow Projection
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
-    // Realistic Lighting Rig with Shadow Casters
+    // Realistic Lighting Rig
     const keyLight = new THREE.DirectionalLight(0xfffaed, 2.8);
     keyLight.position.set(1.5, 3.8, 1.4);
     keyLight.castShadow = !isSoftwareGl;
@@ -407,7 +452,7 @@ export const CameraARView: React.FC = () => {
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
     scene.add(ambientLight);
 
-    // Detected Real-World Floor Plane with ShadowMaterial (Shadow Receiver)
+    // Real-World Floor Plane with ShadowMaterial (Shadow Receiver)
     const floorGeo = new THREE.PlaneGeometry(30, 30);
     const floorShadowMat = new THREE.ShadowMaterial({
       opacity: shadowOpacity,
@@ -431,7 +476,7 @@ export const CameraARView: React.FC = () => {
     scene.add(placedGroup);
     placedGroupRef.current = placedGroup;
 
-    // Placement Surface Reticle Ring
+    // Reticle
     const reticleGeo = new THREE.RingGeometry(0.08, 0.12, 32);
     const reticleMat = new THREE.MeshBasicMaterial({
       color: 0x45e5ff,
@@ -445,14 +490,51 @@ export const CameraARView: React.FC = () => {
     scene.add(reticle);
     reticleMeshRef.current = reticle;
 
-    // Inner reticle dot
     const dotGeo = new THREE.CircleGeometry(0.02, 16);
     const dotMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide });
     const dot = new THREE.Mesh(dotGeo, dotMat);
     dot.position.z = 0.001;
     reticle.add(dot);
 
-    // Initialize WebXR AR if supported and mount button
+    // RESTORE SAVED PERSISTENT AR ANCHOR FROM LOCALSTORAGE
+    try {
+      const savedAnchorStr = localStorage.getItem(AR_ANCHOR_STORAGE_KEY);
+      if (savedAnchorStr) {
+        const savedAnchor: SavedArAnchor = JSON.parse(savedAnchorStr);
+        if (savedAnchor && savedAnchor.modelId) {
+          setSelectedModel(savedAnchor.modelId);
+          setModelScale(savedAnchor.scale || 1.0);
+          setRotationSpeed(savedAnchor.rotationSpeed || 0.5);
+
+          const restoredModel = createPlaceableObject(savedAnchor.modelId);
+          restoredModel.position.set(
+            savedAnchor.position[0],
+            savedAnchor.position[1],
+            savedAnchor.position[2]
+          );
+          restoredModel.rotation.set(
+            savedAnchor.rotation[0],
+            savedAnchor.rotation[1],
+            savedAnchor.rotation[2]
+          );
+          placedGroup.add(restoredModel);
+          placedGroup.scale.set(savedAnchor.scale, savedAnchor.scale, savedAnchor.scale);
+
+          floorShadowPlane.position.y = savedAnchor.position[1] - 0.002;
+          floorShadowPlane.visible = true;
+          reticle.visible = false;
+
+          setIsPlaced(true);
+          setIsPlaneDetected(true);
+          setRestoredFromSavedAnchor(true);
+          setStatusMessage('Restored placed 3D scene from previous session!');
+        }
+      }
+    } catch (err) {
+      console.warn('Could not restore AR anchor from localStorage:', err);
+    }
+
+    // Initialize WebXR AR if supported
     if (arCapability === 'webxr' || 'xr' in navigator) {
       try {
         const webxr = new WebXRAR(
@@ -478,6 +560,7 @@ export const CameraARView: React.FC = () => {
           setShowMoveDevicePrompt(false);
           setPlacedCount(prev => prev + 1);
           recordArPlacement();
+          persistAnchorState(selectedModel, obj.position, obj.rotation, modelScale, rotationSpeed);
           setStatusMessage('3D Object anchored with real-world floor shadow projection!');
         };
 
@@ -503,44 +586,37 @@ export const CameraARView: React.FC = () => {
     };
     window.addEventListener('resize', handleResize);
 
-    // Orientation event listener for gyroscope tracking
-    const handleOrientation = (e: DeviceOrientationEvent) => {
-      if (e.alpha !== null && e.beta !== null && e.gamma !== null && !renderer.xr?.isPresenting) {
-        const b = (e.beta - 45) * 0.005;
-        const g = e.gamma * 0.005;
-        camera.position.x = THREE.MathUtils.clamp(g, -0.5, 0.5);
-        camera.position.y = THREE.MathUtils.clamp(0.45 - b, -0.2, 1.0);
-        camera.lookAt(0, 0, -0.7);
-      }
-    };
-    if (typeof window !== 'undefined' && window.DeviceOrientationEvent) {
-      window.addEventListener('deviceorientation', handleOrientation);
-    }
-
-    // Animation Loop with XR Frame & Model Kinematics
+    // Animation Loop
     const clock = new THREE.Clock();
     renderer.setAnimationLoop((time, frame) => {
       const delta = clock.getDelta();
 
-      // 1. Update WebXR hit-test if active session
       if (webxrArInstanceRef.current) {
         webxrArInstanceRef.current.update(frame);
       }
 
-      // 2. Pulse fallback reticle
+      // Dynamic Gyroscope orientation tracking
+      const gyro = deviceGyro.getState();
+      if (gyro.isActive && !renderer.xr?.isPresenting) {
+        camera.position.x = THREE.MathUtils.clamp(gyro.roll * 0.45, -0.65, 0.65);
+        camera.position.y = THREE.MathUtils.clamp(0.45 - gyro.pitch * 0.45, -0.2, 1.2);
+        camera.lookAt(0, 0, -0.7);
+        _gyroEuler.set(gyro.pitch * 0.25, gyro.yaw * 0.35, gyro.roll * 0.25, 'YXZ');
+        _gyroQuat.setFromEuler(_gyroEuler);
+        camera.quaternion.multiply(_gyroQuat);
+      }
+
       if (reticle.visible) {
         const pulse = 1.0 + Math.sin(time * 0.004) * 0.08;
         reticle.scale.set(pulse, pulse, 1);
       }
 
-      // 3. Rotate placed models & animate sub-parts
-      if (placedGroup.children.length > 0) {
+      if (placedGroup.children.length > 0 && !isDraggingRef.current) {
         placedGroup.children.forEach(child => {
           if (isAnimating) {
             child.rotation.y += delta * rotationSpeed;
           }
 
-          // Mini solar system planetary orbit updates
           child.children.forEach(grandchild => {
             if (grandchild.userData.speed) {
               grandchild.userData.angle += delta * grandchild.userData.speed;
@@ -558,9 +634,6 @@ export const CameraARView: React.FC = () => {
     return () => {
       renderer.setAnimationLoop(null);
       window.removeEventListener('resize', handleResize);
-      if (typeof window !== 'undefined' && window.DeviceOrientationEvent) {
-        window.removeEventListener('deviceorientation', handleOrientation);
-      }
       if (webxrArInstanceRef.current) {
         webxrArInstanceRef.current.dispose();
       }
@@ -582,6 +655,10 @@ export const CameraARView: React.FC = () => {
   useEffect(() => {
     if (placedGroupRef.current) {
       placedGroupRef.current.scale.set(modelScale, modelScale, modelScale);
+      if (isPlaced && placedGroupRef.current.children.length > 0) {
+        const first = placedGroupRef.current.children[0];
+        persistAnchorState(selectedModel, first.position, first.rotation, modelScale, rotationSpeed);
+      }
     }
   }, [modelScale]);
 
@@ -590,7 +667,6 @@ export const CameraARView: React.FC = () => {
     if (!placedGroupRef.current) return;
 
     if (thrustersIgnited) {
-      // Create animated rocket fire plume
       const fireGeo = new THREE.ConeGeometry(0.04, 0.16, 16);
       const fireMat = new THREE.MeshBasicMaterial({
         color: 0xff6600,
@@ -618,23 +694,125 @@ export const CameraARView: React.FC = () => {
     }
   }, [thrustersIgnited]);
 
+  // -------------------------------------------------------------
+  // Touch Gestures: Pinch-to-Scale & Drag-to-Rotate for Placed Assets
+  // -------------------------------------------------------------
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input')) return;
+
+    if (!isPlaced) return;
+
+    if (e.touches.length === 1) {
+      touchLastPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      isDraggingRef.current = true;
+    } else if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      touchStartDistRef.current = dist;
+      touchStartScaleRef.current = modelScale;
+      isDraggingRef.current = true;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isPlaced || !placedGroupRef.current) return;
+
+    // Two-finger Pinch to Scale
+    if (e.touches.length === 2 && touchStartDistRef.current !== null) {
+      const currentDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const factor = currentDist / touchStartDistRef.current;
+      const newScale = THREE.MathUtils.clamp(touchStartScaleRef.current * factor, 0.25, 4.0);
+      setModelScale(parseFloat(newScale.toFixed(2)));
+      return;
+    }
+
+    // Single-finger Drag to Rotate around Y and slight tilt on X
+    if (e.touches.length === 1 && touchLastPosRef.current) {
+      const deltaX = e.touches[0].clientX - touchLastPosRef.current.x;
+      const deltaY = e.touches[0].clientY - touchLastPosRef.current.y;
+
+      placedGroupRef.current.rotation.y += deltaX * 0.015;
+      placedGroupRef.current.rotation.x = THREE.MathUtils.clamp(
+        placedGroupRef.current.rotation.x + deltaY * 0.005,
+        -0.5,
+        0.5
+      );
+
+      touchLastPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+  };
+
+  const handleTouchEnd = () => {
+    isDraggingRef.current = false;
+    touchLastPosRef.current = null;
+    touchStartDistRef.current = null;
+
+    // Persist updated rotation and scale to localStorage
+    if (placedGroupRef.current && placedGroupRef.current.children.length > 0) {
+      const first = placedGroupRef.current.children[0];
+      persistAnchorState(selectedModel, first.position, placedGroupRef.current.rotation, modelScale, rotationSpeed);
+    }
+  };
+
+  // Mouse drag support for desktop/simulator
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input')) return;
+
+    if (isPlaced) {
+      mouseLastPosRef.current = { x: e.clientX, y: e.clientY };
+      isDraggingRef.current = true;
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isPlaced && isDraggingRef.current && mouseLastPosRef.current && placedGroupRef.current) {
+      const deltaX = e.clientX - mouseLastPosRef.current.x;
+      placedGroupRef.current.rotation.y += deltaX * 0.015;
+      mouseLastPosRef.current = { x: e.clientX, y: e.clientY };
+    }
+  };
+
+  const handleMouseUp = () => {
+    isDraggingRef.current = false;
+    mouseLastPosRef.current = null;
+    if (isPlaced && placedGroupRef.current && placedGroupRef.current.children.length > 0) {
+      const first = placedGroupRef.current.children[0];
+      persistAnchorState(selectedModel, first.position, placedGroupRef.current.rotation, modelScale, rotationSpeed);
+    }
+  };
+
+  // Wheel to scale model
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!isPlaced) return;
+    const delta = e.deltaY < 0 ? 0.05 : -0.05;
+    setModelScale(prev => THREE.MathUtils.clamp(parseFloat((prev + delta).toFixed(2)), 0.3, 4.0));
+  };
+
   // Tap-to-Place on Screen
   const handleTapToPlace = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (target.closest('button') || target.closest('input')) return;
 
+    // If already placed, clicks don't re-anchor unless clicking reposition
+    if (isPlaced) return;
+
     soundEffects.playWarp();
 
     if (!sceneRef.current || !placedGroupRef.current || !reticleMeshRef.current) return;
 
-    // Clear previous model
     placedGroupRef.current.clear();
 
     const newModel = createPlaceableObject(selectedModel);
     newModel.position.copy(reticleMeshRef.current.position);
     placedGroupRef.current.add(newModel);
 
-    // Anchor the real-world floor shadow receiver plane directly under the placed model
     if (floorShadowPlaneRef.current) {
       floorShadowPlaneRef.current.position.y = newModel.position.y - 0.002;
       floorShadowPlaneRef.current.visible = true;
@@ -646,6 +824,9 @@ export const CameraARView: React.FC = () => {
     setPlacedCount(prev => prev + 1);
     reticleMeshRef.current.visible = false;
 
+    // Persist Anchor to localStorage
+    persistAnchorState(selectedModel, newModel.position, newModel.rotation, modelScale, rotationSpeed);
+
     const modelName =
       selectedModel === 'minisystem'
         ? 'Mini Solar System'
@@ -653,11 +834,16 @@ export const CameraARView: React.FC = () => {
         ? PLANETS_DATA[selectedModel as PlanetId].name
         : SPACECRAFTS_DATA[selectedModel as SpacecraftId].name;
 
-    setStatusMessage(`${modelName} placed! Shadows grounding on floor.`);
+    setStatusMessage(`${modelName} anchored with floor shadow! Touch & drag to rotate, pinch to scale.`);
     recordArPlacement();
 
     if (selectedModel in PLANETS_DATA) {
       markPlanetExplored(selectedModel as PlanetId);
+      soundEffects.playPlanetSound(selectedModel as PlanetId);
+      soundEffects.speakPlanet(selectedModel as PlanetId);
+    } else if (selectedModel in SPACECRAFTS_DATA) {
+      soundEffects.playSpacecraftSound(selectedModel as SpacecraftId);
+      soundEffects.speakSpacecraft(selectedModel as SpacecraftId);
     }
   };
 
@@ -665,11 +851,17 @@ export const CameraARView: React.FC = () => {
     soundEffects.playClick();
     if (placedGroupRef.current) {
       placedGroupRef.current.clear();
+      placedGroupRef.current.rotation.set(0, 0, 0);
     }
     if (reticleMeshRef.current) {
       reticleMeshRef.current.visible = true;
     }
+    try {
+      localStorage.removeItem(AR_ANCHOR_STORAGE_KEY);
+    } catch {}
+
     setIsPlaced(false);
+    setRestoredFromSavedAnchor(false);
     setHitTestResult(null);
     setIsPlaneDetected(false);
     setShowMoveDevicePrompt(false);
@@ -682,7 +874,7 @@ export const CameraARView: React.FC = () => {
     setFacingMode(prev => (prev === 'environment' ? 'user' : 'environment'));
   };
 
-  // Capture AR Photo (Combines live camera video + 3D canvas with ground shadows)
+  // Capture AR Photo
   const captureArSnapshot = () => {
     soundEffects.playSuccess();
     const video = videoRef.current;
@@ -694,7 +886,6 @@ export const CameraARView: React.FC = () => {
     exportCanvas.height = 720;
     const ctx = exportCanvas.getContext('2d')!;
 
-    // 1. Draw camera video background if available
     if (video && video.readyState >= 2) {
       ctx.drawImage(video, 0, 0, exportCanvas.width, exportCanvas.height);
     } else {
@@ -705,10 +896,8 @@ export const CameraARView: React.FC = () => {
       ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
     }
 
-    // 2. Draw 3D WebGL layer with real-world floor shadows
     ctx.drawImage(renderer.domElement, 0, 0, exportCanvas.width, exportCanvas.height);
 
-    // 3. Watermark badge
     ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
     ctx.beginPath();
     ctx.roundRect(24, exportCanvas.height - 76, 420, 52, 14);
@@ -728,11 +917,10 @@ export const CameraARView: React.FC = () => {
         : SPACECRAFTS_DATA[selectedModel as SpacecraftId].name;
     const sub =
       selectedModel in SPACECRAFTS_DATA
-        ? `${SPACECRAFTS_DATA[selectedModel as SpacecraftId].agency} • Floor Shadow Projection Active`
-        : 'PBR Physical Floor Shadow Projection Active';
+        ? `${SPACECRAFTS_DATA[selectedModel as SpacecraftId].agency} • Floor Shadow Active`
+        : 'Physical Floor Shadow Active';
     ctx.fillText(`${name} | ${sub}`, 40, exportCanvas.height - 28);
 
-    // Trigger download
     const link = document.createElement('a');
     link.download = `AR-Grounded-${selectedModel}-${Date.now()}.png`;
     link.href = exportCanvas.toDataURL('image/png');
@@ -807,7 +995,7 @@ export const CameraARView: React.FC = () => {
 
   return (
     <div className="relative w-full h-[calc(100vh-4rem)] overflow-hidden bg-slate-950 select-none">
-      {/* 1. Real Camera Video Background Feed (Fallback & WebAR Passthrough) */}
+      {/* 1. Real Camera Video Background Feed */}
       <video
         ref={videoRef}
         playsInline
@@ -818,21 +1006,26 @@ export const CameraARView: React.FC = () => {
         }`}
       />
 
-      {/* Simulated Cosmic Floor Grid when camera not active */}
       {!cameraPermissionGranted && (
         <div className="absolute inset-0 bg-gradient-to-b from-indigo-950/40 via-slate-950/80 to-slate-950 pointer-events-none" />
       )}
 
-      {/* 2. Transparent Three.js WebGL Canvas Overlay with Floor Shadow Receiver */}
+      {/* 2. Transparent Three.js WebGL Canvas Overlay with Touch & Gesture Handlers */}
       <div
         ref={mountRef}
         onClick={handleTapToPlace}
-        className="absolute inset-0 w-full h-full cursor-crosshair z-10"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onWheel={handleWheel}
+        className="absolute inset-0 w-full h-full cursor-crosshair z-10 touch-none"
       />
 
-      {/* 3. Top Floating Navigation & Status */}
+      {/* 3. Top Floating Navigation & Persistent Anchor Status */}
       <div className="absolute top-3 inset-x-3 sm:inset-x-6 z-20 flex items-center justify-between pointer-events-none">
-        {/* Back to 3D Solar System Button */}
         <button
           onClick={() => {
             soundEffects.playClick();
@@ -844,15 +1037,47 @@ export const CameraARView: React.FC = () => {
           <span>Exit to Lesson</span>
         </button>
 
-        {/* Shadow Projection Active Indicator Pill */}
+        {/* Persistence Indicator / Shadow Status */}
         <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700 text-xs font-medium text-slate-200 shadow-lg">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span>Floor Shadow Projection Active</span>
+          {restoredFromSavedAnchor ? (
+            <>
+              <History className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Scene Restored from Previous Session</span>
+            </>
+          ) : (
+            <>
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span>Floor Shadow Projection Active</span>
+            </>
+          )}
         </div>
 
         {/* Top-right action buttons */}
         <div className="pointer-events-auto flex items-center gap-2">
-          {/* Switch Camera */}
+          {/* Gyroscope Motion Mode */}
+          <button
+            onClick={toggleGyro}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-all shadow-lg ${
+              isGyroActive
+                ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold shadow-emerald-500/20'
+                : 'bg-slate-900/90 backdrop-blur-md border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title={isGyroActive ? 'Gyroscope Tracking Active (Tilt phone to view model)' : 'Enable Gyroscope Motion'}
+          >
+            <Smartphone className="w-4 h-4" />
+            <span className="hidden sm:inline">{isGyroActive ? (isGyroHardware ? 'Gyro Active' : 'Virtual Gyro') : 'Gyro Mode'}</span>
+          </button>
+
+          {isGyroActive && (
+            <button
+              onClick={calibrateGyro}
+              className="px-2.5 py-2 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 text-xs font-semibold shadow-lg"
+              title="Recenter Gyroscope Reference"
+            >
+              Recenter
+            </button>
+          )}
+
           <button
             onClick={toggleCameraFacing}
             className="p-2 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700 text-slate-200 hover:text-white hover:bg-slate-800 transition-all shadow-lg"
@@ -861,7 +1086,6 @@ export const CameraARView: React.FC = () => {
             <RefreshCw className="w-4 h-4 text-sky-400" />
           </button>
 
-          {/* AR Photo Snapshot */}
           <button
             onClick={captureArSnapshot}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white font-semibold text-xs shadow-lg shadow-pink-600/30 transition-all hover:scale-105"
@@ -882,7 +1106,6 @@ export const CameraARView: React.FC = () => {
 
       {/* 5. Category Selector & Models Horizontal Shelf */}
       <div className="absolute top-24 sm:top-20 inset-x-3 sm:inset-x-6 z-20 flex flex-col items-center gap-2 pointer-events-none">
-        {/* Category Pills */}
         <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-2xl bg-slate-950/85 backdrop-blur-xl border border-slate-800 shadow-xl overflow-x-auto max-w-full">
           <button
             onClick={() => {
@@ -992,6 +1215,16 @@ export const CameraARView: React.FC = () => {
           })}
         </div>
       </div>
+
+      {/* Touch Gesture Guidance Floating Banner when Placed */}
+      {isPlaced && (
+        <div className="absolute top-44 sm:top-36 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/80 text-[11px] text-slate-300 shadow-lg">
+            <Move className="w-3 h-3 text-sky-400" />
+            <span>Touch & drag to rotate • Pinch to scale</span>
+          </div>
+        </div>
+      )}
 
       {/* Visual scanning instruction card if floor not yet detected */}
       {showMoveDevicePrompt && !isPlaced && (
@@ -1114,10 +1347,9 @@ export const CameraARView: React.FC = () => {
         </div>
       )}
 
-      {/* Bottom Collapsible Flight Dock with Realistic Shadow Controls */}
+      {/* Bottom Collapsible Flight Dock with Shadow Controls */}
       <div className="absolute bottom-4 inset-x-3 sm:inset-x-6 z-30 flex justify-center pointer-events-none">
         <div className="pointer-events-auto w-full max-w-xl bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-2xl p-3 sm:p-4 shadow-2xl space-y-3">
-          {/* Top Dock Bar */}
           <div className="flex items-center justify-between text-xs">
             <div className="flex items-center gap-2">
               {isPlaced ? (
@@ -1132,7 +1364,7 @@ export const CameraARView: React.FC = () => {
                 <div className="flex items-center gap-1.5 text-amber-300 font-medium">
                   <span className="w-2 h-2 rounded-full bg-amber-400" />
                   <span>
-                    Tap screen to place{' '}
+                    Tap floor to anchor{' '}
                     {selectedModel === 'minisystem'
                       ? 'Solar System'
                       : selectedModel in PLANETS_DATA
@@ -1144,7 +1376,6 @@ export const CameraARView: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Rocket Thrusters Ignition Button */}
               {isSpacecraft && (
                 <button
                   onClick={() => {
@@ -1163,7 +1394,6 @@ export const CameraARView: React.FC = () => {
                 </button>
               )}
 
-              {/* Facts Button */}
               <button
                 onClick={() => {
                   soundEffects.playClick();
@@ -1179,7 +1409,6 @@ export const CameraARView: React.FC = () => {
                 <span>Specs</span>
               </button>
 
-              {/* Expand/Collapse Advanced Controls */}
               <button
                 onClick={() => setIsControlsExpanded(!isControlsExpanded)}
                 className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white border border-slate-700"

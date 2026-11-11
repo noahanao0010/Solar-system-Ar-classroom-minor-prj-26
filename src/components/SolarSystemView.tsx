@@ -5,7 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { useClassroom } from '../context/ClassroomContext';
 import { PLANETS_DATA, ORDERED_PLANETS } from '../data/planetsData';
 import { SPACECRAFTS_DATA, ORDERED_SPACECRAFT } from '../data/spaceCraftData';
-import { PlanetId, SpacecraftId } from '../types/astronomy';
+import { PlanetId, SpacecraftId, ArPlaceableId } from '../types/astronomy';
 import { getPlanetTexture, getRingTexture } from '../utils/textureGenerator';
 import { createSpacecraftObject } from '../utils/spaceCraftModels';
 import { soundEffects } from '../utils/soundEffects';
@@ -26,12 +26,17 @@ import {
   Rocket,
   Orbit,
   Sparkles,
+  Smartphone,
 } from 'lucide-react';
+import { deviceGyro } from '../utils/deviceOrientation';
+import { useGyroscope } from '../hooks/useGyroscope';
 
-// Pre-allocated reusable math vectors
+// Pre-allocated reusable math vectors & quaternions
 const _tempVec = new THREE.Vector3();
 const _targetCamPos = new THREE.Vector3();
 const _targetLookAt = new THREE.Vector3();
+const _gyroEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _gyroQuat = new THREE.Quaternion();
 
 export const SolarSystemView: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -50,6 +55,16 @@ export const SolarSystemView: React.FC = () => {
   const [showOrbits, setShowOrbits] = useState<boolean>(true);
   const [showSpacecraft, setShowSpacecraft] = useState<boolean>(true);
   const [focusedPlanet, setFocusedPlanet] = useState<PlanetId | 'overview' | SpacecraftId>('overview');
+
+  // Device Gyroscope & Motion Tracking
+  const {
+    isActive: isGyroActive,
+    isHardware: isGyroHardware,
+    toggleGyro,
+    calibrate: calibrateGyro,
+    sensitivity: gyroSensitivity,
+    setSensitivity: setGyroSensitivity,
+  } = useGyroscope();
 
   // Three.js refs
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -409,6 +424,15 @@ export const SolarSystemView: React.FC = () => {
       }
 
       controls.update();
+
+      // Dynamic immersive gyroscope & cockpit motion
+      const gyro = deviceGyro.getState();
+      if (gyro.isActive && !isTransitioningRef.current) {
+        _gyroEuler.set(gyro.pitch * 0.45, gyro.yaw * 0.55, gyro.roll * 0.35, 'YXZ');
+        _gyroQuat.setFromEuler(_gyroEuler);
+        camera.quaternion.multiply(_gyroQuat);
+      }
+
       renderer.render(scene, camera);
     }
 
@@ -740,7 +764,48 @@ export const SolarSystemView: React.FC = () => {
                 ))}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Gyroscope Motion Control */}
+                <div className="flex items-center gap-1 bg-slate-800/90 p-0.5 rounded-lg border border-slate-700/60">
+                  <button
+                    onClick={toggleGyro}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                      isGyroActive
+                        ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/20'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                    }`}
+                    title={isGyroActive ? 'Gyroscope Motion Active (Tilt phone or move mouse)' : 'Enable Gyroscope Motion'}
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>{isGyroActive ? (isGyroHardware ? 'Gyro Active' : 'Virtual Gyro') : 'Gyro Mode'}</span>
+                  </button>
+
+                  {isGyroActive && (
+                    <>
+                      <button
+                        onClick={calibrateGyro}
+                        className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-700/80 text-slate-200 hover:bg-slate-600 hover:text-white"
+                        title="Recenter zero reference to current phone orientation"
+                      >
+                        Recenter
+                      </button>
+                      <div className="flex items-center gap-0.5 text-[10px] text-slate-400 pl-1 border-l border-slate-700">
+                        {[1, 1.5, 2].map(s => (
+                          <button
+                            key={s}
+                            onClick={() => setGyroSensitivity(s)}
+                            className={`px-1.5 py-0.5 rounded ${
+                              gyroSensitivity === s ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {s}x
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 <button
                   onClick={() => setShowOrbits(!showOrbits)}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md border font-medium transition-all ${
