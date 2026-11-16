@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
+import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -13,373 +14,14 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
-// In-memory registry of AR projects and MyWebAR embeds
-interface ArProject {
-  id: string;
-  name: string;
-  type: 'native-threejs' | 'mywebar-embed' | 'webxr-hit-test';
-  targetPlanet?: string;
-  embedUrl?: string;
-  qrCodeUrl?: string;
-  description: string;
-  tags: string[];
-}
-
-const AR_PROJECTS_REGISTRY: ArProject[] = [
-  {
-    id: 'proj-solar-system',
-    name: 'Interactive Solar System AR',
-    type: 'native-threejs',
-    description: 'Animated 3D planetary orbits and surface tracking.',
-    tags: ['astronomy', 'webxr', 'solar-system'],
-  },
-  {
-    id: 'proj-earth-ar',
-    name: 'Earth 3D & Internal Core Dissector',
-    type: 'webxr-hit-test',
-    targetPlanet: 'earth',
-    description: 'Earth surface topography, atmosphere, and cutaway core in AR.',
-    tags: ['earth', 'atmosphere', 'geology'],
-  },
-  {
-    id: 'proj-mars-ar',
-    name: 'Mars Red Planet Rover Landing Site',
-    type: 'webxr-hit-test',
-    targetPlanet: 'mars',
-    description: 'Olympus Mons, Valles Marineris canyon, and iron oxide terrain in AR.',
-    tags: ['mars', 'space-exploration'],
-  },
-  {
-    id: 'proj-saturn-ar',
-    name: 'Saturn & Ice Ring Dynamics',
-    type: 'webxr-hit-test',
-    targetPlanet: 'saturn',
-    description: 'Realistic concentric ice ring system with axial tilt in AR.',
-    tags: ['saturn', 'rings', 'gas-giant'],
-  },
-  {
-    id: 'proj-mywebar-sample',
-    name: 'MyWebAR Space Exploration Portal',
-    type: 'mywebar-embed',
-    embedUrl: 'https://mywebar.com/p/project/demo-space',
-    description: 'External MyWebAR experience embedded directly in the classroom.',
-    tags: ['mywebar', 'embed', 'interactive'],
-  },
-];
-
-// Planetary scientific database for MCP queries
-const PLANET_KNOWLEDGE: Record<string, any> = {
-  earth: {
-    diameterKm: 12742,
-    gravity: '9.81 m/s²',
-    temperature: '15°C',
-    moons: ['The Moon (Luna)'],
-    highlights: 'Only known astronomical object harboring liquid oceans and life.',
-  },
-  mars: {
-    diameterKm: 6779,
-    gravity: '3.72 m/s²',
-    temperature: '-62°C',
-    moons: ['Phobos', 'Deimos'],
-    highlights: 'Home to Olympus Mons (highest volcano) and Valles Marineris canyon.',
-  },
-  venus: {
-    diameterKm: 12104,
-    gravity: '8.87 m/s²',
-    temperature: '464°C',
-    moons: [],
-    highlights: 'Hottest planet in the Solar System due to runaway greenhouse effect.',
-  },
-  jupiter: {
-    diameterKm: 139820,
-    gravity: '24.79 m/s²',
-    temperature: '-110°C',
-    moons: ['Ganymede', 'Europa', 'Io', 'Callisto', '91 others'],
-    highlights: 'Largest planet with the Great Red Spot storm raging over 300 years.',
-  },
-  saturn: {
-    diameterKm: 116460,
-    gravity: '10.44 m/s²',
-    temperature: '-140°C',
-    moons: ['Titan', 'Enceladus', '144 others'],
-    highlights: 'Glorious ice ring system spanning 282,000 km, density less than liquid water.',
-  },
-};
-
-// ----------------------------------------------------
-// 1. Model Context Protocol (MCP) Endpoints
-// Standard JSON-RPC 2.0 interface for AI assistants
-// ----------------------------------------------------
-
-const MCP_TOOLS = [
-  {
-    name: 'list_ar_projects',
-    description: 'List all available AR planetary experiences, WebXR simulations, and embedded MyWebAR projects in the classroom.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        filter: {
-          type: 'string',
-          description: 'Optional filter tag (e.g. "mywebar", "astronomy", "rings")',
-        },
-      },
-    },
-  },
-  {
-    name: 'get_ar_link',
-    description: 'Generate a direct mobile-friendly launch URL and scannable QR code for any AR planet experience.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        planetId: {
-          type: 'string',
-          enum: ['earth', 'mars', 'venus', 'jupiter', 'saturn', 'uranus', 'neptune', 'mercury', 'sun'],
-          description: 'The target planet ID to experience in AR.',
-        },
-      },
-      required: ['planetId'],
-    },
-  },
-  {
-    name: 'get_planet_facts',
-    description: 'Retrieve physical and astronomical facts for a given planet.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        planetId: {
-          type: 'string',
-          description: 'The planet identifier (e.g. earth, mars, jupiter).',
-        },
-      },
-      required: ['planetId'],
-    },
-  },
-  {
-    name: 'embed_mywebar_project',
-    description: 'Register and embed a new MyWebAR or external WebAR experience into the AR Smart Classroom.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Title of the MyWebAR project' },
-        embedUrl: { type: 'string', description: 'The MyWebAR project link or embed URL (e.g. https://mywebar.com/p/...)' },
-        description: { type: 'string', description: 'Brief description of the experience' },
-      },
-      required: ['name', 'embedUrl'],
-    },
-  },
-];
-
-// MCP Discovery Manifest
-app.get(['/api/mcp/manifest', '/.well-known/mcp.json'], (_req: Request, res: Response) => {
-  res.json({
-    schema_version: 'v1',
-    name_for_model: 'ar_smart_classroom_mcp',
-    name_for_human: 'AR Smart Classroom MCP Server',
-    description_for_model:
-      'Provides tools to list WebAR and MyWebAR projects, generate mobile QR launch codes, and query planetary astronomy models.',
-    description_for_human: 'AI integration tools for AR Smart Classroom and MyWebAR experiences.',
-    capabilities: {
-      tools: true,
-      resources: false,
-      prompts: false,
-    },
-    tools: MCP_TOOLS,
-  });
+// Health check endpoint
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ status: 'healthy', timestamp: Date.now() });
 });
 
-// MCP JSON-RPC 2.0 Handler
-app.post(['/api/mcp', '/mcp'], async (req: Request, res: Response) => {
-  const { jsonrpc, id, method, params } = req.body || {};
-
-  if (jsonrpc !== '2.0') {
-    return res.status(400).json({
-      jsonrpc: '2.0',
-      id: id || null,
-      error: { code: -32600, message: 'Invalid Request: jsonrpc must be 2.0' },
-    });
-  }
-
-  // 1. Initialize
-  if (method === 'initialize') {
-    return res.json({
-      jsonrpc: '2.0',
-      id,
-      result: {
-        protocolVersion: '2024-11-05',
-        serverInfo: {
-          name: 'ar-smart-classroom-mcp',
-          version: '1.0.0',
-        },
-        capabilities: {
-          tools: {},
-        },
-      },
-    });
-  }
-
-  // 2. Tools List
-  if (method === 'tools/list') {
-    return res.json({
-      jsonrpc: '2.0',
-      id,
-      result: {
-        tools: MCP_TOOLS,
-      },
-    });
-  }
-
-  // 3. Tools Call
-  if (method === 'tools/call') {
-    const { name, arguments: args } = params || {};
-
-    try {
-      if (name === 'list_ar_projects') {
-        const filter = args?.filter?.toLowerCase();
-        const results = filter
-          ? AR_PROJECTS_REGISTRY.filter(p => p.tags.some(t => t.includes(filter)) || p.name.toLowerCase().includes(filter))
-          : AR_PROJECTS_REGISTRY;
-
-        return res.json({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ count: results.length, projects: results }, null, 2),
-              },
-            ],
-          },
-        });
-      }
-
-      if (name === 'get_ar_link') {
-        const planetId = args?.planetId || 'earth';
-        const baseUrl = process.env.APP_URL || `http://localhost:${PORT}`;
-        const launchUrl = `${baseUrl}/?view=cameraAR&planet=${planetId}`;
-        const qrDataUrl = await QRCode.toDataURL(launchUrl, { width: 256, margin: 2 });
-
-        return res.json({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  {
-                    planetId,
-                    launchUrl,
-                    qrCodeDataUrl: qrDataUrl,
-                    instructions: 'Scan this QR code with mobile camera to launch the WebAR planet immediately.',
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
-          },
-        });
-      }
-
-      if (name === 'get_planet_facts') {
-        const planetId = (args?.planetId || 'earth').toLowerCase();
-        const facts = PLANET_KNOWLEDGE[planetId] || { message: 'Planet not in summary index; see 3D Solar Model.' };
-
-        return res.json({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [{ type: 'text', text: JSON.stringify(facts, null, 2) }],
-          },
-        });
-      }
-
-      if (name === 'embed_mywebar_project') {
-        const { name: pName, embedUrl, description } = args || {};
-        if (!pName || !embedUrl) {
-          throw new Error('name and embedUrl are required');
-        }
-
-        const newProject: ArProject = {
-          id: `proj-custom-${Date.now()}`,
-          name: pName,
-          type: 'mywebar-embed',
-          embedUrl,
-          description: description || 'Embedded WebAR experience',
-          tags: ['custom', 'mywebar'],
-        };
-
-        AR_PROJECTS_REGISTRY.push(newProject);
-
-        return res.json({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ success: true, message: 'MyWebAR project registered successfully.', project: newProject }, null, 2),
-              },
-            ],
-          },
-        });
-      }
-
-      return res.status(404).json({
-        jsonrpc: '2.0',
-        id,
-        error: { code: -32601, message: `Tool not found: ${name}` },
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        jsonrpc: '2.0',
-        id,
-        error: { code: -32603, message: err.message || 'Internal error' },
-      });
-    }
-  }
-
-  return res.status(404).json({
-    jsonrpc: '2.0',
-    id,
-    error: { code: -32601, message: `Method not found: ${method}` },
-  });
-});
-
-// ----------------------------------------------------
-// 2. REST API Endpoints for Frontend Hub
-// ----------------------------------------------------
-
-// List all AR & MyWebAR projects
-app.get('/api/ar-projects', (_req: Request, res: Response) => {
-  res.json({ projects: AR_PROJECTS_REGISTRY });
-});
-
-// Add new custom MyWebAR embed
-app.post('/api/ar-projects', (req: Request, res: Response) => {
-  const { name, embedUrl, description, targetPlanet } = req.body;
-  if (!name || !embedUrl) {
-    return res.status(400).json({ error: 'name and embedUrl are required.' });
-  }
-
-  const newProject: ArProject = {
-    id: `proj-custom-${Date.now()}`,
-    name,
-    type: 'mywebar-embed',
-    embedUrl,
-    targetPlanet,
-    description: description || 'Custom MyWebAR classroom module',
-    tags: ['mywebar', 'custom'],
-  };
-
-  AR_PROJECTS_REGISTRY.push(newProject);
-  res.json({ success: true, project: newProject });
-});
-
-// Dynamic QR Code Generator endpoint
+// Dynamic QR Code Generator endpoint for mobile AR launch
 app.get('/api/qr', async (req: Request, res: Response) => {
   const text = (req.query.text as string) || (process.env.APP_URL || `http://localhost:${PORT}`);
   try {
@@ -390,8 +32,159 @@ app.get('/api/qr', async (req: Request, res: Response) => {
   }
 });
 
+// Teacher Visual Animated Presentation Architect Agent (Server-side @google/genai)
+app.post('/api/teacher/presentation-agent', async (req: Request, res: Response) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'Gemini API key is not configured on the server. Add GEMINI_API_KEY in Settings > Secrets.',
+      code: 'MISSING_API_KEY',
+    });
+    return;
+  }
+
+  const { message, history = [], currentSlide, allSlideTitles = [], slideIndex = 0 } = req.body || {};
+  if (!message || typeof message !== 'string') {
+    res.status(400).json({ error: 'A message string is required.' });
+    return;
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    const systemInstruction = `You are an Agentic Astronomy Presentation Architect for the AR Smart Classroom app.
+Your job is to collaborate with teachers to design visual, animated 3D Solar System & Camera AR lessons.
+Valid targetPlanet values: "all", "sun", "mercury", "venus", "earth", "mars", "jupiter", "saturn", "uranus", "neptune", "iss", "hubble", "jwst", "sputnik", "saturn-v", "starship", "sls", "apollo-lander", "voyager", "mars-rover", "space-shuttle", "milky-way", "andromeda", "triangulum", "sombrero", "whirlpool", "cartwheel", "cigar", "large-magellanic-cloud", "cosmic-web", "observable-universe".
+Valid theme values (3D camera flyby animations): "solar-corona", "terrestrial-survey", "asteroid-canyon", "gas-ring-sweep", "ice-frontier", "spacecraft-fleet", "deep-cosmos".
+Valid material kinds: "3d-asset", "ar-lab", "compare", "quiz", "worksheet".
+Valid targetView values: "solarSystem", "cameraAR", "explorer", "compare", "quiz", "missions".
+Valid customImportant severity values: "critical", "exam-focus", "lab-note".
+
+Strict formatting rules:
+- NEVER include emojis anywhere in titles, headings, talkingPoints, or other fields. Use crisp academic plain text.
+- Keep proposedSlide.title concise (4 to 9 words, under 65 characters).
+- Always return valid JSON matching the schema:
+  - assistantMessage: concise, insightful 2-3 sentence explanation of your visual animation and teaching plan.
+  - suggestions: 2 to 3 concrete visual animation concepts tailored to the teacher's topic, describing camera movement, visual effects (corona dive, ring grazing sweep, AR gravity drop, terminator shadow rotation, etc.), and student AR activity.
+  - proposedSlide: whenever the teacher asks to create, draft, update, animate, or suggest a lesson/slide, set includeProposedSlide to true and populate ALL key fields (concise title, subheading, targetPlanet, theme, 3-4 talkingPoints, engaging promptQuestion, didYouKnow, spoken narrationScript, 1-2 prerequisites, 1-2 interactive materials, and customImportant fields).`;
+
+    const trimmedHistory = Array.isArray(history)
+      ? history
+          .slice(-6)
+          .map((h: any) => `${h.role === 'user' ? 'Teacher' : 'Agent'}: ${String(h.content || '').slice(0, 500)}`)
+          .join('\n')
+      : '';
+
+    const promptContext = `Deck Slides (${allSlideTitles.length} total): ${JSON.stringify(allSlideTitles)}
+Active Slide #${Number(slideIndex) + 1}: ${JSON.stringify(currentSlide || {})}
+${trimmedHistory ? `\nRecent Conversation:\n${trimmedHistory}` : ''}
+\nTeacher Request: ${message}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: promptContext,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            assistantMessage: {
+              type: Type.STRING,
+              description: 'Helpful response explaining the recommended visual animation & teaching approach.',
+            },
+            includeProposedSlide: {
+              type: Type.BOOLEAN,
+              description: 'True when proposing a full ready-to-apply lesson slide.',
+            },
+            suggestions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  animationType: { type: Type.STRING, description: 'Short label e.g. Ring Grazing Flyby, AR Gravity Drop, Core Cutaway' },
+                  cameraChoreography: { type: Type.STRING, description: 'How the 3D camera & scene animate visually' },
+                  theme: { type: Type.STRING },
+                  targetPlanet: { type: Type.STRING },
+                  arActivityIdea: { type: Type.STRING, description: 'Hands-on AR camera or 3D lab activity for students' },
+                },
+                required: ['title', 'animationType', 'cameraChoreography', 'theme', 'targetPlanet', 'arActivityIdea'],
+              },
+            },
+            proposedSlide: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                subheading: { type: Type.STRING },
+                targetPlanet: { type: Type.STRING },
+                theme: { type: Type.STRING },
+                talkingPoints: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                promptQuestion: { type: Type.STRING },
+                didYouKnow: { type: Type.STRING },
+                narrationScript: { type: Type.STRING },
+                prerequisites: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                customImportantHeading: { type: Type.STRING },
+                customImportantContent: { type: Type.STRING },
+                customImportantSeverity: { type: Type.STRING },
+                materials: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: { type: Type.STRING },
+                      kind: { type: Type.STRING },
+                      targetView: { type: Type.STRING },
+                      targetAssetId: { type: Type.STRING },
+                      note: { type: Type.STRING },
+                    },
+                    required: ['title', 'kind', 'targetView'],
+                  },
+                },
+              },
+              required: [
+                'title',
+                'subheading',
+                'targetPlanet',
+                'theme',
+                'talkingPoints',
+                'promptQuestion',
+                'didYouKnow',
+              ],
+            },
+          },
+          required: ['assistantMessage', 'includeProposedSlide', 'suggestions'],
+        },
+      },
+    });
+
+    const rawText = (response.text ?? '{}').trim();
+    const parsed = JSON.parse(rawText);
+    res.json(parsed);
+  } catch (err: any) {
+    const statusCode = typeof err?.status === 'number' ? err.status : 500;
+    res.status(statusCode).json({
+      error: err?.message || 'Failed to run Gemini presentation architect agent.',
+      code: err?.code || 'GEMINI_AGENT_ERROR',
+    });
+  }
+});
+
 // ----------------------------------------------------
-// 3. Vite Middleware (Dev) or Static Serve (Prod)
+// Vite Middleware (Dev) or Static Serve (Prod)
 // ----------------------------------------------------
 
 async function startServer() {
@@ -412,7 +205,6 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`AR Smart Classroom running on http://0.0.0.0:${PORT}`);
-    console.log(`MCP Endpoint available at POST http://0.0.0.0:${PORT}/api/mcp`);
   });
 }
 

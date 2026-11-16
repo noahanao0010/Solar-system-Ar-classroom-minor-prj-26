@@ -445,3 +445,131 @@ export function getArReticleTexture(): THREE.CanvasTexture {
   textureCache.set(key, texture);
   return texture;
 }
+
+/**
+ * Generates procedural grayscale surface relief (bump map) for realistic PBR surface shading
+ */
+export function getPlanetBumpTexture(id: PlanetId): THREE.CanvasTexture {
+  const key = `bump-${id}`;
+  if (textureCache.has(key)) return textureCache.get(key)!;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  // Base mid-elevation
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (id === 'mercury' || id === 'mars') {
+    const count = id === 'mercury' ? 500 : 280;
+    for (let i = 0; i < count; i++) {
+      const x = Math.random() * canvas.width;
+      const y = Math.random() * canvas.height;
+      const r = 2 + Math.random() * 14;
+      // Dark crater floor
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.8, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(25, 25, 25, 0.45)';
+      ctx.fill();
+      // Bright crater rim
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(235, 235, 235, 0.4)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    if (id === 'mars') {
+      // Deep Valles Marineris canyon trench
+      ctx.beginPath();
+      ctx.moveTo(canvas.width * 0.35, canvas.height * 0.55);
+      ctx.bezierCurveTo(canvas.width * 0.45, canvas.height * 0.53, canvas.width * 0.55, canvas.height * 0.58, canvas.width * 0.65, canvas.height * 0.54);
+      ctx.strokeStyle = '#151515';
+      ctx.lineWidth = 7;
+      ctx.stroke();
+    }
+  } else if (id === 'earth') {
+    // Smooth ocean floor, elevated continents
+    ctx.fillStyle = '#404040';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const continents = [
+      { x: canvas.width * 0.25, y: canvas.height * 0.35, rx: 45, ry: 30 },
+      { x: canvas.width * 0.32, y: canvas.height * 0.65, rx: 30, ry: 40 },
+      { x: canvas.width * 0.52, y: canvas.height * 0.30, rx: 35, ry: 25 },
+      { x: canvas.width * 0.54, y: canvas.height * 0.55, rx: 40, ry: 40 },
+      { x: canvas.width * 0.72, y: canvas.height * 0.32, rx: 55, ry: 35 },
+      { x: canvas.width * 0.82, y: canvas.height * 0.70, rx: 28, ry: 22 },
+    ];
+    continents.forEach(c => {
+      ctx.fillStyle = '#b8b8b8';
+      ctx.beginPath();
+      ctx.ellipse(c.x, c.y, c.rx, c.ry, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#efefef';
+      ctx.beginPath();
+      ctx.ellipse(c.x + c.rx * 0.1, c.y, c.rx * 0.4, c.ry * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  } else {
+    // Banded atmospheric shear relief for gas/ice giants & Venus
+    for (let i = 0; i < 32; i++) {
+      const y = (canvas.height / 32) * i;
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(210, 210, 210, 0.28)' : 'rgba(60, 60, 60, 0.28)';
+      ctx.fillRect(0, y, canvas.width, canvas.height / 32);
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  textureCache.set(key, texture);
+  return texture;
+}
+
+/**
+ * Generates procedural roughness map (e.g. glossy liquid oceans vs matte terrain)
+ */
+export function getPlanetRoughnessTexture(id: PlanetId): THREE.CanvasTexture {
+  const key = `roughness-${id}`;
+  if (textureCache.has(key)) return textureCache.get(key)!;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  if (id === 'earth') {
+    // Low roughness (darker) for reflective ocean water
+    ctx.fillStyle = '#383838';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // High roughness (lighter) for matte terrestrial land & ice
+    ctx.fillStyle = '#d4d4d4';
+    const continents = [
+      { x: canvas.width * 0.25, y: canvas.height * 0.35, rx: 45, ry: 30 },
+      { x: canvas.width * 0.32, y: canvas.height * 0.65, rx: 30, ry: 40 },
+      { x: canvas.width * 0.52, y: canvas.height * 0.30, rx: 35, ry: 25 },
+      { x: canvas.width * 0.54, y: canvas.height * 0.55, rx: 40, ry: 40 },
+      { x: canvas.width * 0.72, y: canvas.height * 0.32, rx: 55, ry: 35 },
+      { x: canvas.width * 0.82, y: canvas.height * 0.70, rx: 28, ry: 22 },
+    ];
+    continents.forEach(c => {
+      ctx.beginPath();
+      ctx.ellipse(c.x, c.y, c.rx, c.ry, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  } else {
+    ctx.fillStyle = id === 'mercury' || id === 'mars' ? '#dedede' : '#a8a8a8';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  textureCache.set(key, texture);
+  return texture;
+}
+

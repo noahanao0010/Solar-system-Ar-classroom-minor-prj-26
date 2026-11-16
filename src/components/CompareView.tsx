@@ -6,9 +6,17 @@ import { useClassroom } from '../context/ClassroomContext';
 import { PLANETS_DATA, ORDERED_PLANETS } from '../data/planetsData';
 import { SPACECRAFTS_DATA, ORDERED_SPACECRAFT } from '../data/spaceCraftData';
 import { PlanetId, SpacecraftId } from '../types/astronomy';
-import { getPlanetTexture, getRingTexture } from '../utils/textureGenerator';
+import { getPlanetTexture } from '../utils/textureGenerator';
 import { createSpacecraftObject } from '../utils/spaceCraftModels';
+import {
+  CinematicPipeline,
+  createCinematicComposer,
+  createEnhancedPlanetAssembly,
+  createSolarCoronaGroup,
+  createSpectralStarfield,
+} from '../utils/coreAssetsEngine';
 import { soundEffects } from '../utils/soundEffects';
+import { PageShell, SegmentedTabs } from './ui/ObservatoryPrimitives';
 import {
   Scale,
   Plus,
@@ -33,6 +41,7 @@ export const CompareView: React.FC = () => {
     recordCompareUsed,
     setCurrentView,
     setSelectedPlanetId,
+    colorGradePreset,
   } = useClassroom();
 
   const mountRef = useRef<HTMLDivElement>(null);
@@ -43,6 +52,7 @@ export const CompareView: React.FC = () => {
   // Three.js refs
   const sceneRef = useRef<THREE.Scene | null>(null);
   const itemsGroupRef = useRef<THREE.Group | null>(null);
+  const pipelineRef = useRef<CinematicPipeline | null>(null);
   const animationFrameRef = useRef<number>(0);
 
   useEffect(() => {
@@ -128,6 +138,9 @@ export const CompareView: React.FC = () => {
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
     scene.add(ambientLight);
 
+    // Subtle multi-spectral deep space backdrop
+    scene.add(createSpectralStarfield(isSoftwareGl ? 500 : 1200, 140));
+
     const itemsGroup = new THREE.Group();
     scene.add(itemsGroup);
     itemsGroupRef.current = itemsGroup;
@@ -136,6 +149,8 @@ export const CompareView: React.FC = () => {
     const count = compareItems.length;
     const spacing = count === 2 ? 4.5 : 3.6;
     const startX = -((count - 1) * spacing) / 2;
+
+    const coronaGroups: THREE.Group[] = [];
 
     compareItems.forEach((itemId, idx) => {
       const itemGroup = new THREE.Group();
@@ -153,40 +168,21 @@ export const CompareView: React.FC = () => {
           r = THREE.MathUtils.clamp(0.4 * Math.pow(ratio, 0.65), 0.35, 2.4);
         }
 
-        const pGeo = new THREE.SphereGeometry(r, 36, 36);
-        const pTex = getPlanetTexture(pId);
-        const pMat = new THREE.MeshStandardMaterial({
-          map: pTex,
-          roughness: 0.65,
-          metalness: 0.1,
-        });
-        const mesh = new THREE.Mesh(pGeo, pMat);
-        mesh.rotation.z = THREE.MathUtils.degToRad(pData.tiltDegrees);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        itemGroup.add(mesh);
-
-        if (pData.hasRings) {
-          const ringGeo = new THREE.RingGeometry(r * 1.35, r * 2.3, 48);
-          ringGeo.rotateX(Math.PI / 2);
-          const ringMat = new THREE.MeshStandardMaterial({
-            map: getRingTexture(pId === 'uranus' ? 'uranus' : 'saturn'),
-            side: THREE.DoubleSide,
-            transparent: true,
-            opacity: 0.9,
+        if (pId === 'sun') {
+          const sunGeo = new THREE.SphereGeometry(r, 40, 40);
+          const sunMat = new THREE.MeshBasicMaterial({
+            map: getPlanetTexture('sun'),
+            color: 0xffeedd,
           });
-          const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-          mesh.add(ringMesh);
+          const sunMesh = new THREE.Mesh(sunGeo, sunMat);
+          const solarCorona = createSolarCoronaGroup(r);
+          sunMesh.add(solarCorona);
+          coronaGroups.push(solarCorona);
+          itemGroup.add(sunMesh);
+        } else {
+          const mesh = createEnhancedPlanetAssembly(pId, r, isSoftwareGl ? 32 : 44);
+          itemGroup.add(mesh);
         }
-
-        const glowGeo = new THREE.SphereGeometry(r * 1.04, 24, 24);
-        const glowMat = new THREE.MeshStandardMaterial({
-          color: new THREE.Color(pData.accentColor),
-          transparent: true,
-          opacity: 0.25,
-          side: THREE.BackSide,
-        });
-        itemGroup.add(new THREE.Mesh(glowGeo, glowMat));
 
         // Ground shadow
         const shadowGeo = new THREE.PlaneGeometry(r * 3.5, r * 3.5);
@@ -230,6 +226,17 @@ export const CompareView: React.FC = () => {
       itemsGroup.add(itemGroup);
     });
 
+    if (!isSoftwareGl) {
+      pipelineRef.current = createCinematicComposer(
+        renderer,
+        scene,
+        camera,
+        container.clientWidth,
+        container.clientHeight,
+        colorGradePreset,
+      );
+    }
+
     const handleResize = () => {
       if (!container || !renderer || !camera) return;
       const w = container.clientWidth;
@@ -237,6 +244,7 @@ export const CompareView: React.FC = () => {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      pipelineRef.current?.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
 
@@ -244,19 +252,30 @@ export const CompareView: React.FC = () => {
     function animate() {
       animationFrameRef.current = requestAnimationFrame(animate);
       const delta = clock.getDelta();
+      const elapsed = clock.getElapsedTime();
 
       itemsGroup.children.forEach(ig => {
         ig.rotation.y += delta * 0.35;
       });
 
+      coronaGroups.forEach(cg => {
+        if (cg.userData?.update) cg.userData.update(elapsed);
+      });
+
       controls.update();
-      renderer.render(scene, camera);
+      if (pipelineRef.current) {
+        pipelineRef.current.composer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
     }
     animate();
 
     return () => {
       cancelAnimationFrame(animationFrameRef.current);
       window.removeEventListener('resize', handleResize);
+      pipelineRef.current?.dispose();
+      pipelineRef.current = null;
       controls.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
@@ -264,6 +283,10 @@ export const CompareView: React.FC = () => {
       }
     };
   }, [compareItems, useTrueScale]);
+
+  useEffect(() => {
+    pipelineRef.current?.applyPreset(colorGradePreset);
+  }, [colorGradePreset]);
 
   const handlePlaySound = (id: CompareItemKey) => {
     if (id in PLANETS_DATA) {
@@ -331,15 +354,19 @@ export const CompareView: React.FC = () => {
   }
 
   return (
-    <div className="min-h-full pb-16 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto space-y-6 pt-4">
+    <PageShell maxWidth="7xl">
       {/* Header & Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900/80 border border-slate-800 p-4 sm:p-5 rounded-2xl shadow-xl">
+      <div className="flex flex-wrap items-center justify-between gap-4 glass-panel-elevated p-5 sm:p-6 rounded-3xl">
         <div>
+          <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.2em] text-purple-300 mb-1">
+            <span className="w-2 h-2 rounded-full bg-purple-400" />
+            <span>Scale Comparator · Side-by-Side 3D</span>
+          </div>
           <div className="flex items-center gap-2">
             <Scale className="w-5 h-5 text-purple-400" />
-            <h1 className="text-xl sm:text-2xl font-bold text-white">Planetary & Spacecraft Compare</h1>
+            <h1 className="font-display text-xl sm:text-2xl font-bold text-white">Planetary & Spacecraft Compare</h1>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-slate-300 mt-1">
             Compare worlds, satellites, and heavy-lift rockets side-by-side in real-time 3D PBR with authentic acoustics and scale metrics.
           </p>
         </div>
@@ -350,10 +377,10 @@ export const CompareView: React.FC = () => {
               soundEffects.playClick();
               setUseTrueScale(!useTrueScale);
             }}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
               useTrueScale
-                ? 'bg-purple-600/30 border-purple-500 text-purple-300 shadow-md shadow-purple-500/20'
-                : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                ? 'bg-purple-500/20 border-purple-400/60 text-purple-200 shadow-md shadow-purple-500/15'
+                : 'bg-slate-900/90 border-slate-700 text-slate-300 hover:text-white'
             }`}
           >
             {useTrueScale ? 'Proportional True Scale: ON' : 'Normalized Scale: ON'}
@@ -362,11 +389,11 @@ export const CompareView: React.FC = () => {
       </div>
 
       {/* 3D Visual Stage */}
-      <div className="relative w-full h-80 sm:h-96 rounded-3xl overflow-hidden bg-slate-950 border border-slate-800 shadow-2xl">
+      <div className="relative w-full h-80 sm:h-96 rounded-3xl overflow-hidden bg-slate-950 border border-slate-800/90 shadow-2xl">
         <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
         {/* Labels over compared items */}
-        <div className="absolute bottom-4 inset-x-4 flex justify-around pointer-events-none">
+        <div className="absolute bottom-4 inset-x-4 flex justify-around pointer-events-none gap-2">
           {compareItems.map(itemId => {
             const isPlanet = itemId in PLANETS_DATA;
             const name = isPlanet ? PLANETS_DATA[itemId as PlanetId].name : SPACECRAFTS_DATA[itemId as SpacecraftId].name;
@@ -376,12 +403,12 @@ export const CompareView: React.FC = () => {
             return (
               <div
                 key={itemId}
-                className="pointer-events-auto bg-slate-900/90 backdrop-blur-md border border-slate-700 px-3 py-1.5 rounded-xl shadow-lg flex items-center gap-2"
+                className="pointer-events-auto glass-panel px-3 py-1.5 rounded-xl shadow-lg flex items-center gap-2"
               >
                 <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
                 <div className="text-left">
-                  <div className="text-xs font-bold text-white">{name}</div>
-                  <div className="text-[10px] text-slate-400 uppercase font-medium">{sub}</div>
+                  <div className="font-display text-xs font-bold text-white">{name}</div>
+                  <div className="text-[10px] font-mono text-slate-400 uppercase">{sub}</div>
                 </div>
                 <button
                   onClick={() => handlePlaySound(itemId)}
@@ -397,55 +424,30 @@ export const CompareView: React.FC = () => {
       </div>
 
       {/* Item Picker Shelf */}
-      <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-2xl space-y-3">
+      <div className="glass-panel p-4 sm:p-5 rounded-2xl space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+          <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
             <Plus className="w-3.5 h-3.5 text-purple-400" />
             Add to Compare (Up to 3 items)
           </span>
 
-          <div className="flex items-center gap-1 p-0.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
-            <button
-              onClick={() => setItemCategoryFilter('all')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                itemCategoryFilter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              All
-            </button>
-            <button
-              onClick={() => setItemCategoryFilter('planets')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                itemCategoryFilter === 'planets' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Planets
-            </button>
-            <button
-              onClick={() => setItemCategoryFilter('satellites')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                itemCategoryFilter === 'satellites' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Satellites
-            </button>
-            <button
-              onClick={() => setItemCategoryFilter('rockets')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                itemCategoryFilter === 'rockets' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Rockets
-            </button>
-            <button
-              onClick={() => setItemCategoryFilter('spacecraft')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                itemCategoryFilter === 'spacecraft' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Craft
-            </button>
-          </div>
+          <SegmentedTabs
+            layoutId="compare-filter-tabs"
+            value={itemCategoryFilter}
+            onChange={val => {
+              soundEffects.playClick();
+              setItemCategoryFilter(val);
+            }}
+            accentClass="bg-purple-500/25 border border-purple-400/50 shadow-sm shadow-purple-500/15"
+            compact
+            items={[
+              { id: 'all', label: 'All' },
+              { id: 'planets', label: 'Planets' },
+              { id: 'satellites', label: 'Satellites' },
+              { id: 'rockets', label: 'Rockets' },
+              { id: 'spacecraft', label: 'Craft' },
+            ]}
+          />
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -457,8 +459,8 @@ export const CompareView: React.FC = () => {
                 onClick={() => (isAlreadyCompared ? removeItemFromCompare(item.id) : addItemToCompare(item.id))}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border ${
                   isAlreadyCompared
-                    ? 'bg-purple-600/30 border-purple-500 text-purple-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white'
+                    ? 'bg-purple-600/25 border-purple-400/60 text-purple-200'
+                    : 'bg-slate-950/75 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white'
                 }`}
               >
                 <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
@@ -471,7 +473,7 @@ export const CompareView: React.FC = () => {
       </div>
 
       {/* Side-by-Side Comparison Table */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+      <div className="glass-panel rounded-2xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
@@ -626,6 +628,6 @@ export const CompareView: React.FC = () => {
           </table>
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 };

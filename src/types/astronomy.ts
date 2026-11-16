@@ -24,7 +24,19 @@ export type SpacecraftId =
   | 'mars-rover'
   | 'space-shuttle';
 
-export type ArPlaceableId = PlanetId | 'minisystem' | SpacecraftId;
+export type GalaxyId =
+  | 'milky-way'
+  | 'andromeda'
+  | 'triangulum'
+  | 'sombrero'
+  | 'whirlpool'
+  | 'cartwheel'
+  | 'cigar'
+  | 'large-magellanic-cloud'
+  | 'cosmic-web'
+  | 'observable-universe';
+
+export type ArPlaceableId = PlanetId | 'minisystem' | SpacecraftId | GalaxyId;
 
 export interface SpacecraftInfo {
   id: SpacecraftId;
@@ -125,11 +137,50 @@ export interface StudentProgress {
   notes: { id: string; planetId: PlanetId; text: string; date: string }[];
 }
 
+export type TeacherSlideTheme =
+  | 'solar-corona'
+  | 'terrestrial-survey'
+  | 'asteroid-canyon'
+  | 'gas-ring-sweep'
+  | 'ice-frontier'
+  | 'spacecraft-fleet'
+  | 'deep-cosmos';
+
+export type TeacherMaterialKind = '3d-asset' | 'ar-lab' | 'compare' | 'quiz' | 'worksheet' | 'external-ref';
+
+export interface TeacherMaterialItem {
+  id: string;
+  title: string;
+  kind: TeacherMaterialKind;
+  targetView?: 'solarSystem' | 'cameraAR' | 'explorer' | 'compare' | 'quiz' | 'missions';
+  targetAssetId?: string;
+  note?: string;
+  url?: string;
+}
+
+export interface TeacherImportantCallout {
+  heading: string;
+  content: string;
+  severity: 'critical' | 'exam-focus' | 'lab-note';
+}
+
 export interface TeacherSlide {
   id: number;
   title: string;
-  targetPlanet: PlanetId | 'all';
+  subheading?: string;
+  targetPlanet: PlanetId | SpacecraftId | GalaxyId | 'all';
   talkingPoints: string[];
   promptQuestion: string;
   didYouKnow: string;
+  theme?: TeacherSlideTheme;
+  narrationScript?: string;
+  prerequisites?: string[];
+  materials?: TeacherMaterialItem[];
+  customImportant?: TeacherImportantCallout;
+  cinematicWaypoints?: {
+    cameraPos: [number, number, number];
+    lookAt: [number, number, number];
+    desc: string;
+  }[];
 }
+

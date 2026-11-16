@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { ARButton } from 'three/addons/webxr/ARButton.js';
 
 export type PlanetFactory = () => THREE.Object3D;
 
@@ -17,10 +16,12 @@ export class WebXRAR {
   private hitTestSource: any = null;
   private referenceSpace: any = null;
   private supported = false;
+  private currentSession: any = null;
 
   public readonly button: HTMLElement;
   public onPlaced?: (object: THREE.Object3D) => void;
   public onHitTestResult?: (hasHit: boolean) => void;
+  public onFallback?: () => void;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -34,7 +35,9 @@ export class WebXRAR {
 
     // Enable WebXR & Soft Shadow Mapping on Renderer
     this.renderer.xr.enabled = true;
-    this.renderer.xr.setReferenceSpaceType('local');
+    try {
+      this.renderer.xr.setReferenceSpaceType('local');
+    } catch {}
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -100,20 +103,127 @@ export class WebXRAR {
     (this.controller as any).addEventListener('select', this.placePlanet);
     this.scene.add(this.controller);
 
-    // 5. Browser-managed AR launch button
-    const sessionInit: any = {
-      requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'light-estimation'],
-    };
-
-    if (domOverlayElement) {
-      sessionInit.domOverlay = { root: domOverlayElement };
-    }
-
-    this.button = ARButton.createButton(this.renderer, sessionInit);
+    // 5. Safe, robust AR Launch Button (prevents "The specified session configuration is not supported")
+    this.button = this.createSafeARButton(domOverlayElement);
 
     this.renderer.xr.addEventListener('sessionstart', this.onSessionStart);
     this.renderer.xr.addEventListener('sessionend', this.onSessionEnd);
+  }
+
+  /**
+   * Builds an AR launch button that safely initiates immersive-ar without crashing
+   * on devices or runtimes lacking specific physical AR features.
+   */
+  private createSafeARButton(domOverlayElement?: HTMLElement): HTMLElement {
+    const button = document.createElement('button');
+    button.id = 'SafeARButton';
+    button.style.display = 'none';
+    button.className = 'px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer select-none';
+    button.textContent = 'START WEBAR';
+
+    const onSessionEnded = () => {
+      if (this.currentSession) {
+        this.currentSession.removeEventListener('end', onSessionEnded);
+        this.currentSession = null;
+      }
+      button.textContent = 'START WEBAR';
+      button.className = 'px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer select-none';
+      this.onSessionEnd();
+    };
+
+    const startARSession = async () => {
+      if (typeof navigator === 'undefined' || !('xr' in navigator)) {
+        if (this.onFallback) this.onFallback();
+        return;
+      }
+
+      const xr = (navigator as any).xr;
+
+      // Safe tiered configurations: ALL advanced capabilities in optionalFeatures, NEVER requiredFeatures
+      const configsToTry: any[] = [
+        {
+          optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation'],
+          ...(domOverlayElement ? { domOverlay: { root: domOverlayElement } } : {}),
+        },
+        {
+          optionalFeatures: ['hit-test', 'local-floor'],
+        },
+        {
+          optionalFeatures: ['local-floor'],
+        },
+        {},
+      ];
+
+      let session: any = null;
+
+      for (const config of configsToTry) {
+        try {
+          session = await xr.requestSession('immersive-ar', config);
+          if (session) break;
+        } catch {
+          // Gracefully continue to next configuration
+        }
+      }
+
+      if (!session) {
+        console.warn('WebXR immersive-ar session could not be started; falling back to camera stream');
+        button.style.display = 'none';
+        if (this.onFallback) {
+          this.onFallback();
+        }
+        return;
+      }
+
+      try {
+        session.addEventListener('end', onSessionEnded);
+        try {
+          this.renderer.xr.setReferenceSpaceType('local');
+        } catch {}
+        await this.renderer.xr.setSession(session);
+        this.currentSession = session;
+        button.textContent = 'STOP WEBAR';
+        button.className = 'px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-lg transition-all cursor-pointer select-none';
+      } catch (err) {
+        console.warn('Could not set WebXR session on renderer:', err);
+        try {
+          session.end().catch(() => {});
+        } catch {}
+        button.style.display = 'none';
+        if (this.onFallback) this.onFallback();
+      }
+    };
+
+    button.onclick = async () => {
+      if (this.currentSession === null) {
+        await startARSession();
+      } else {
+        try {
+          await this.currentSession.end();
+        } catch {}
+      }
+    };
+
+    // Check if immersive-ar is truly supported before showing button
+    if (typeof navigator !== 'undefined' && 'xr' in navigator && (navigator as any).xr?.isSessionSupported) {
+      try {
+        (navigator as any).xr.isSessionSupported('immersive-ar')
+          .then((isSupported: boolean) => {
+            if (isSupported) {
+              button.style.display = 'inline-block';
+            } else {
+              button.style.display = 'none';
+              if (this.onFallback) this.onFallback();
+            }
+          })
+          .catch(() => {
+            button.style.display = 'none';
+          });
+      } catch {
+        button.style.display = 'none';
+      }
+    }
+
+    return button;
   }
 
   public setPlanetFactory(factory: PlanetFactory) {
@@ -125,32 +235,45 @@ export class WebXRAR {
       const session = this.renderer.xr.getSession();
       if (!session) return;
 
-      const viewerSpace = await session.requestReferenceSpace('viewer');
-      this.referenceSpace = this.renderer.xr.getReferenceSpace();
+      this.currentSession = session;
 
-      if ('requestHitTestSource' in session) {
-        this.hitTestSource = await (session as any).requestHitTestSource({
-          space: viewerSpace,
-        });
+      try {
+        const viewerSpace = await session.requestReferenceSpace('viewer');
+        this.referenceSpace = this.renderer.xr.getReferenceSpace();
+
+        if ('requestHitTestSource' in session) {
+          try {
+            this.hitTestSource = await (session as any).requestHitTestSource({
+              space: viewerSpace,
+            });
+          } catch {
+            this.hitTestSource = null;
+          }
+        }
+      } catch (spaceErr) {
+        console.warn('Reference space request notice:', spaceErr);
       }
 
       this.reticle.visible = false;
       this.floorShadowPlane.visible = true;
       this.supported = true;
     } catch (error) {
-      console.warn('AR hit test initialization failed or running in simulator:', error);
+      console.warn('AR session start fallback notice:', error);
       this.hitTestSource = null;
       this.supported = false;
     }
   };
 
   private onSessionEnd = () => {
-    this.hitTestSource?.cancel();
+    try {
+      this.hitTestSource?.cancel();
+    } catch {}
     this.hitTestSource = null;
     this.referenceSpace = null;
     this.reticle.visible = false;
     this.floorShadowPlane.visible = false;
     this.supported = false;
+    this.currentSession = null;
   };
 
   // Called inside the Three.js animation loop with XR frame
@@ -159,30 +282,34 @@ export class WebXRAR {
       return;
     }
 
-    const results = frame.getHitTestResults(this.hitTestSource);
-    if (results.length === 0) {
+    try {
+      const results = frame.getHitTestResults(this.hitTestSource);
+      if (results.length === 0) {
+        this.reticle.visible = false;
+        if (this.onHitTestResult) this.onHitTestResult(false);
+        return;
+      }
+
+      const pose = results[0].getPose(this.referenceSpace);
+      if (!pose) {
+        this.reticle.visible = false;
+        if (this.onHitTestResult) this.onHitTestResult(false);
+        return;
+      }
+
+      this.reticle.visible = true;
+      this.reticle.matrix.fromArray(pose.transform.matrix);
+      this.reticle.matrixWorldNeedsUpdate = true;
+
+      // Anchor shadow receiver plane exactly flush with the detected real-world floor plane
+      const floorPos = new THREE.Vector3().setFromMatrixPosition(this.reticle.matrix);
+      this.floorShadowPlane.position.set(floorPos.x, floorPos.y - 0.002, floorPos.z);
+      this.floorShadowPlane.visible = true;
+
+      if (this.onHitTestResult) this.onHitTestResult(true);
+    } catch {
       this.reticle.visible = false;
-      if (this.onHitTestResult) this.onHitTestResult(false);
-      return;
     }
-
-    const pose = results[0].getPose(this.referenceSpace);
-    if (!pose) {
-      this.reticle.visible = false;
-      if (this.onHitTestResult) this.onHitTestResult(false);
-      return;
-    }
-
-    this.reticle.visible = true;
-    this.reticle.matrix.fromArray(pose.transform.matrix);
-    this.reticle.matrixWorldNeedsUpdate = true;
-
-    // Anchor shadow receiver plane exactly flush with the detected real-world floor plane
-    const floorPos = new THREE.Vector3().setFromMatrixPosition(this.reticle.matrix);
-    this.floorShadowPlane.position.set(floorPos.x, floorPos.y - 0.002, floorPos.z);
-    this.floorShadowPlane.visible = true;
-
-    if (this.onHitTestResult) this.onHitTestResult(true);
   }
 
   public placePlanet = () => {
@@ -224,11 +351,13 @@ export class WebXRAR {
   }
 
   public dispose() {
-    (this.controller as any).removeEventListener('select', this.placePlanet);
-    this.renderer.xr.removeEventListener('sessionstart', this.onSessionStart);
-    this.renderer.xr.removeEventListener('sessionend', this.onSessionEnd);
+    try {
+      (this.controller as any)?.removeEventListener('select', this.placePlanet);
+      this.renderer.xr.removeEventListener('sessionstart', this.onSessionStart);
+      this.renderer.xr.removeEventListener('sessionend', this.onSessionEnd);
+      this.hitTestSource?.cancel();
+    } catch {}
 
-    this.hitTestSource?.cancel();
     this.scene.remove(this.reticle);
     this.scene.remove(this.controller);
     this.scene.remove(this.floorShadowPlane);

@@ -1,5 +1,55 @@
 @import "tailwindcss";
 
+@layer base {
+  :root {
+    --font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #030612;
+    color: #f1f5f9;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Custom hairline glass surface utility */
+.glass-panel {
+  background: rgba(6, 10, 24, 0.78);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.glass-panel-elevated {
+  background: linear-gradient(180deg, rgba(12, 18, 38, 0.88) 0%, rgba(5, 8, 20, 0.92) 100%);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65), inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Smooth scrollbar hiding for carousels */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* WebXR native overlay button styling */
 #ar-container {
   position: relative;
   display: flex;
@@ -9,52 +59,82 @@
 }
 
 #ar-container button {
-  border: 1px solid rgba(69, 229, 255, 0.6);
+  border: 1px solid rgba(56, 189, 248, 0.55);
   border-radius: 12px;
   padding: 10px 20px;
-  background: #102b43;
+  background: rgba(11, 25, 48, 0.9);
+  backdrop-filter: blur(12px);
   color: #ffffff;
   font-weight: 600;
   cursor: pointer;
   font-size: 13px;
-  box-shadow: 0 4px 14px rgba(69, 229, 255, 0.25);
-  transition: all 0.2s ease;
+  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.22);
+  transition: all 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 #ar-container button:hover {
-  background: #17496a;
+  background: rgba(20, 56, 92, 0.95);
   transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(56, 189, 248, 0.35);
 }
 
 #ar-container button:focus-visible {
-  outline: 3px solid #45e5ff;
+  outline: 2px solid #38bdf8;
   outline-offset: 3px;
 }
 
-@keyframes arDeviceSweep {
+/* View entry & transportation motion */
+@keyframes viewStageEnter {
   0% {
-    transform: translateX(-30px) rotate(-10deg);
-  }
-  50% {
-    transform: translateX(30px) rotate(10deg);
+    opacity: 0;
+    transform: scale(0.985) translateY(8px);
+    filter: blur(4px);
   }
   100% {
-    transform: translateX(-30px) rotate(-10deg);
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: blur(0px);
+  }
+}
+
+.animate-stage-enter {
+  animation: viewStageEnter 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes slowOrbitSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-orbit-slow {
+  animation: slowOrbitSpin 48s linear infinite;
+}
+
+.animate-orbit-reverse {
+  animation: slowOrbitSpin 64s linear infinite reverse;
+}
+
+@keyframes arDeviceSweep {
+  0%, 100% {
+    transform: translateX(-28px) rotate(-8deg);
+  }
+  50% {
+    transform: translateX(28px) rotate(8deg);
   }
 }
 
 @keyframes arBeamPulse {
-  0% {
+  0%, 100% {
     opacity: 0.25;
     transform: scale(0.88);
   }
   50% {
     opacity: 0.9;
     transform: scale(1.12);
-  }
-  100% {
-    opacity: 0.25;
-    transform: scale(0.88);
   }
 }
 
@@ -83,15 +163,27 @@
 
 @keyframes arCardPulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.3), 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.28), 0 20px 25px -5px rgba(0, 0, 0, 0.6);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 25px 6px rgba(56, 189, 248, 0.65), 0 25px 30px -5px rgba(0, 0, 0, 0.7);
-    transform: scale(1.02);
+    box-shadow: 0 0 24px 6px rgba(56, 189, 248, 0.55), 0 25px 30px -5px rgba(0, 0, 0, 0.7);
+    transform: scale(1.015);
   }
 }
 
 .animate-card-pulse {
-  animation: arCardPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: arCardPulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-stage-enter,
+  .animate-orbit-slow,
+  .animate-orbit-reverse,
+  .animate-ar-sweep,
+  .animate-ar-beam,
+  .animate-ar-radar,
+  .animate-card-pulse {
+    animation: none !important;
+  }
 }

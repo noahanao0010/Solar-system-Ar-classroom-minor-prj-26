@@ -47,6 +47,20 @@ export function create3DGalaxy(galaxyId: string, particleCount = 18000): THREE.G
   let isRing = false;
   let isCigarStarburst = false;
   let hasEdgeDustRing = false;
+  const isCosmicWeb = galaxyId === 'cosmic-web';
+  const isObservableUniverse = galaxyId === 'observable-universe';
+
+  // Cosmic Web supercluster anchors
+  const superclusterNodes = [
+    new THREE.Vector3(0, 0, 0),          // Laniakea Core
+    new THREE.Vector3(2.8, 1.2, -1.8),   // Perseus-Pisces
+    new THREE.Vector3(-3.2, 0.8, 2.1),   // Shapley Attractor
+    new THREE.Vector3(1.5, -2.4, 2.6),   // Coma Supercluster
+    new THREE.Vector3(-2.1, -1.6, -2.8), // Hercules
+    new THREE.Vector3(3.6, -0.6, 0.9),   // Great Attractor
+    new THREE.Vector3(-1.2, 2.9, -1.4),  // Corona Borealis
+    new THREE.Vector3(0.5, 3.2, 2.2),    // Virgo Node
+  ];
 
   // Customize based on galaxy type
   if (galaxyId === 'milky-way') {
@@ -85,10 +99,114 @@ export function create3DGalaxy(galaxyId: string, particleCount = 18000): THREE.G
     hasBar = true;
     radius = 4.8;
     randomness = 0.6;
+  } else if (isCosmicWeb) {
+    radius = 8.5;
+  } else if (isObservableUniverse) {
+    radius = 9.0;
   }
 
   for (let i = 0; i < particleCount; i++) {
     const i3 = i * 3;
+
+    // Special: Intergalactic Cosmic Web Network Architecture
+    if (isCosmicWeb) {
+      const mode = i % 10;
+      if (mode < 4) {
+        // Clustered around supercluster nodes
+        const node = superclusterNodes[i % superclusterNodes.length];
+        const spread = 0.7 + Math.random() * 0.5;
+        positions[i3] = node.x + (Math.random() - 0.5) * spread;
+        positions[i3 + 1] = node.y + (Math.random() - 0.5) * spread;
+        positions[i3 + 2] = node.z + (Math.random() - 0.5) * spread;
+
+        // Radiant violet/cyan node cores
+        colors[i3] = 0.88;
+        colors[i3 + 1] = 0.65;
+        colors[i3 + 2] = 1.0;
+        sizes[i] = 2.0;
+      } else if (mode < 8) {
+        // Connecting filament strands between nodes
+        const nA = superclusterNodes[i % superclusterNodes.length];
+        const nB = superclusterNodes[(i + 1 + (i % 3)) % superclusterNodes.length];
+        const t = Math.random();
+        const strandDisplacement = 0.35 * Math.sin(t * Math.PI);
+
+        positions[i3] = THREE.MathUtils.lerp(nA.x, nB.x, t) + (Math.random() - 0.5) * strandDisplacement;
+        positions[i3 + 1] = THREE.MathUtils.lerp(nA.y, nB.y, t) + (Math.random() - 0.5) * strandDisplacement;
+        positions[i3 + 2] = THREE.MathUtils.lerp(nA.z, nB.z, t) + (Math.random() - 0.5) * strandDisplacement;
+
+        // Cyan / Electric Blue gas filaments
+        colors[i3] = 0.35;
+        colors[i3 + 1] = 0.85;
+        colors[i3 + 2] = 1.0;
+        sizes[i] = 1.4;
+      } else {
+        // Diffuse intergalactic void matter
+        const r = Math.pow(Math.random(), 0.7) * radius;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i3 + 2] = r * Math.cos(phi);
+
+        colors[i3] = 0.6;
+        colors[i3 + 1] = 0.4;
+        colors[i3 + 2] = 0.9;
+        sizes[i] = 0.9;
+      }
+      continue;
+    }
+
+    // Special: Observable Universe Spherical Horizon Architecture
+    if (isObservableUniverse) {
+      const mode = i % 10;
+      if (mode < 4) {
+        // Outer CMB boundary sphere
+        const r = 8.0 + Math.random() * 0.5;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i3 + 2] = r * Math.cos(phi);
+
+        const fluctuation = Math.sin(positions[i3] * 1.5) * Math.cos(positions[i3 + 1] * 1.5);
+        if (fluctuation > 0.25) {
+          colors[i3] = 1.0; colors[i3 + 1] = 0.45; colors[i3 + 2] = 0.3; // Warm orange CMB spot
+        } else if (fluctuation < -0.25) {
+          colors[i3] = 0.25; colors[i3 + 1] = 0.75; colors[i3 + 2] = 1.0; // Cool cyan CMB spot
+        } else {
+          colors[i3] = 0.75; colors[i3 + 1] = 0.45; colors[i3 + 2] = 0.95; // Mid purple
+        }
+        sizes[i] = 1.8;
+      } else if (mode < 7) {
+        // Intermediate cosmic epochs
+        const r = 4.5 + Math.random() * 2.2;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i3 + 2] = r * Math.cos(phi);
+
+        colors[i3] = 0.95;
+        colors[i3 + 1] = 0.8;
+        colors[i3 + 2] = 0.4;
+        sizes[i] = 1.3;
+      } else {
+        // Local volume and nearby galaxy clusters
+        const r = Math.pow(Math.random(), 1.5) * 3.5;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i3 + 2] = r * Math.cos(phi);
+
+        colors[i3] = 0.4;
+        colors[i3 + 1] = 0.88;
+        colors[i3 + 2] = 1.0;
+        sizes[i] = 1.5;
+      }
+      continue;
+    }
 
     // Special: Cartwheel Galaxy Ring Architecture
     if (isRing) {
@@ -302,23 +420,110 @@ export function create3DGalaxy(galaxyId: string, particleCount = 18000): THREE.G
   const points = new THREE.Points(geometry, material);
   group.add(points);
 
-  // Central Supermassive Black Hole event horizon sphere
-  const smbhGeo = new THREE.SphereGeometry(0.12, 24, 24);
-  const smbhMat = new THREE.MeshBasicMaterial({ color: 0x020308 });
-  const smbh = new THREE.Mesh(smbhGeo, smbhMat);
-  group.add(smbh);
+  // Central Supermassive Black Hole (for individual galaxies) or Cosmic Web Nodes / CMB Horizon
+  if (isCosmicWeb) {
+    // Add glowing nodal spheres for major superclusters
+    superclusterNodes.forEach((node, nIdx) => {
+      const nodeGeo = new THREE.SphereGeometry(0.22, 16, 16);
+      const nodeMat = new THREE.MeshBasicMaterial({
+        color: nIdx === 0 ? 0xffea77 : 0xa855f7,
+        transparent: true,
+        opacity: 0.85,
+      });
+      const nodeMesh = new THREE.Mesh(nodeGeo, nodeMat);
+      nodeMesh.position.copy(node);
+      group.add(nodeMesh);
 
-  // Glowing photon ring around black hole
-  const ringGeo = new THREE.RingGeometry(0.13, 0.22, 32);
-  ringGeo.rotateX(Math.PI / 2);
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: 0xfff0aa,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.85,
-  });
-  const ring = new THREE.Mesh(ringGeo, ringMat);
-  group.add(ring);
+      // Soft node glow halo
+      const haloGeo = new THREE.SphereGeometry(0.42, 16, 16);
+      const haloMat = new THREE.MeshBasicMaterial({
+        color: nIdx === 0 ? 0xffddaa : 0x38bdf8,
+        transparent: true,
+        opacity: 0.25,
+        side: THREE.BackSide,
+      });
+      const haloMesh = new THREE.Mesh(haloGeo, haloMat);
+      nodeMesh.add(haloMesh);
+    });
+  } else if (isObservableUniverse) {
+    // Outer CMB Horizon Shell with procedural thermal map
+    const cmbCanvas = document.createElement('canvas');
+    cmbCanvas.width = 256;
+    cmbCanvas.height = 128;
+    const ctx = cmbCanvas.getContext('2d')!;
+    const imgData = ctx.createImageData(256, 128);
+    for (let py = 0; py < 128; py++) {
+      for (let px = 0; px < 256; px++) {
+        const idx = (py * 256 + px) * 4;
+        const val =
+          Math.sin(px * 0.12) * Math.cos(py * 0.15) +
+          Math.sin(px * 0.24 + py * 0.18) * 0.5;
+        // Thermal fluctuation colormap: cool cyan to warm red
+        if (val > 0.2) {
+          imgData.data[idx] = 230;     // R
+          imgData.data[idx + 1] = 100; // G
+          imgData.data[idx + 2] = 50;  // B
+        } else if (val < -0.2) {
+          imgData.data[idx] = 40;
+          imgData.data[idx + 1] = 160;
+          imgData.data[idx + 2] = 240;
+        } else {
+          imgData.data[idx] = 120;
+          imgData.data[idx + 1] = 70;
+          imgData.data[idx + 2] = 180;
+        }
+        imgData.data[idx + 3] = 75; // subtle translucency
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    const cmbTex = new THREE.CanvasTexture(cmbCanvas);
+
+    const cmbGeo = new THREE.SphereGeometry(8.6, 32, 32);
+    const cmbMat = new THREE.MeshBasicMaterial({
+      map: cmbTex,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    const cmbSphere = new THREE.Mesh(cmbGeo, cmbMat);
+    group.add(cmbSphere);
+
+    // Central Observer Node (Earth / Milky Way position)
+    const obsGeo = new THREE.SphereGeometry(0.15, 16, 16);
+    const obsMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const obsMesh = new THREE.Mesh(obsGeo, obsMat);
+    group.add(obsMesh);
+
+    // Pulse beacon ring around observer
+    const pRingGeo = new THREE.RingGeometry(0.18, 0.28, 32);
+    pRingGeo.rotateX(Math.PI / 2);
+    const pRingMat = new THREE.MeshBasicMaterial({
+      color: 0x67e8f9,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+    });
+    obsMesh.add(new THREE.Mesh(pRingGeo, pRingMat));
+  } else {
+    // Central Supermassive Black Hole event horizon sphere
+    const smbhGeo = new THREE.SphereGeometry(0.12, 24, 24);
+    const smbhMat = new THREE.MeshBasicMaterial({ color: 0x020308 });
+    const smbh = new THREE.Mesh(smbhGeo, smbhMat);
+    group.add(smbh);
+
+    // Glowing photon ring around black hole
+    const ringGeo = new THREE.RingGeometry(0.13, 0.22, 32);
+    ringGeo.rotateX(Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xfff0aa,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    group.add(ring);
+  }
 
   // For Whirlpool M51, add companion dwarf galaxy NGC 5195
   if (galaxyId === 'whirlpool') {

@@ -1,7 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { PlanetId, StudentProgress, Mission } from '../types/astronomy';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { PlanetId, StudentProgress, Mission, TeacherSlide } from '../types/astronomy';
 import { INITIAL_MISSIONS } from '../data/missionsData';
+import { TEACHER_SLIDES } from '../data/teacherData';
 import { soundEffects } from '../utils/soundEffects';
+import { ColorGradePresetId } from '../utils/coreAssetsEngine';
 
 export type AppView =
   | 'dashboard'
@@ -12,8 +14,26 @@ export type AppView =
   | 'quiz'
   | 'progress'
   | 'teacher'
-  | 'cameraAR'
-  | 'mywebarHub';
+  | 'cameraAR';
+
+const VIEW_TRANSIT_LABELS: Record<AppView, { title: string; subtitle: string }> = {
+  dashboard: { title: 'Command Deck', subtitle: 'Orbital Telemetry & Learning Hub' },
+  solarSystem: { title: '3D Deep Space', subtitle: 'Heliospheric & Galactic Simulation' },
+  explorer: { title: 'World & Galaxy Dissector', subtitle: 'PBR Surface & Interior Inspection' },
+  compare: { title: 'Scale Comparator', subtitle: 'Side-by-Side Physical Metrics' },
+  missions: { title: 'Mission Control', subtitle: 'Curriculum Objectives & Badges' },
+  quiz: { title: 'Assessment Deck', subtitle: '5-Question Planetary Mastery' },
+  progress: { title: 'Cadet Journal', subtitle: 'Field Notes & Telemetry Log' },
+  teacher: { title: 'Educator Console', subtitle: 'Guided Presentation & Roster' },
+  cameraAR: { title: 'Live Camera AR', subtitle: 'Spatial Surface Anchor Engine' },
+};
+
+export interface TransitState {
+  active: boolean;
+  destination: AppView | null;
+  title: string;
+  subtitle: string;
+}
 
 export interface ClassroomStudent {
   id: string;
@@ -28,6 +48,9 @@ export interface ClassroomStudent {
 interface ClassroomContextType {
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
+  transitState: TransitState;
+  colorGradePreset: ColorGradePresetId;
+  setColorGradePreset: (preset: ColorGradePresetId) => void;
   selectedPlanetId: PlanetId;
   setSelectedPlanetId: (id: PlanetId) => void;
   comparePlanets: PlanetId[];
@@ -44,6 +67,7 @@ interface ClassroomContextType {
   recordArPlacement: () => void;
   recordCompareUsed: () => void;
   claimMissionReward: (missionId: string) => void;
+  grantBonusXp: (amount: number, badgeName?: string) => void;
   addStudentNote: (planetId: PlanetId, text: string) => void;
   deleteStudentNote: (noteId: string) => void;
   resetProgress: () => void;
@@ -52,18 +76,30 @@ interface ClassroomContextType {
   soundEnabled: boolean;
   toggleSound: () => void;
 
-  // Teacher Presentation state
+  // Teacher Presentation & Curriculum Authoring state
   classroomCode: string;
   generateNewClassroomCode: () => void;
+  teacherSlides: TeacherSlide[];
+  updateTeacherSlide: (slideIndex: number, patch: Partial<TeacherSlide>) => void;
+  addTeacherSlide: () => void;
+  duplicateTeacherSlide: (slideIndex: number) => void;
+  deleteTeacherSlide: (slideIndex: number) => void;
+  moveTeacherSlide: (fromIndex: number, direction: 'up' | 'down') => void;
+  resetTeacherSlides: () => void;
+  importTeacherSlides: (slides: TeacherSlide[]) => boolean;
   teacherSlideIndex: number;
   setTeacherSlideIndex: (idx: number) => void;
   isLaserPointerActive: boolean;
   setIsLaserPointerActive: (active: boolean) => void;
+  isTeacherPresenting3D: boolean;
+  setIsTeacherPresenting3D: (active: boolean) => void;
   simulatedStudents: ClassroomStudent[];
 }
 
 const STORAGE_KEY = 'ar_smart_classroom_progress_v2';
 const SOUND_KEY = 'ar_smart_classroom_sound';
+const COLOR_GRADE_KEY = 'ar_smart_classroom_color_grade_v1';
+const TEACHER_SLIDES_KEY = 'ar_smart_classroom_teacher_slides_v1';
 
 const DEFAULT_PROGRESS: StudentProgress = {
   xp: 120,
@@ -103,11 +139,44 @@ function calculateLevelAndTitle(xp: number): { level: number; title: string } {
 }
 
 export function ClassroomProvider({ children }: { children: ReactNode }) {
-  const [currentView, setCurrentView] = useState<AppView>('dashboard');
+  const [currentView, setInternalView] = useState<AppView>('dashboard');
+  const [transitState, setTransitState] = useState<TransitState>({
+    active: false,
+    destination: null,
+    title: '',
+    subtitle: '',
+  });
+  const transitTimersRef = useRef<number[]>([]);
+
+  const [colorGradePreset, setColorGradePreset] = useState<ColorGradePresetId>(() => {
+    if (typeof window === 'undefined') return 'deep-cosmos';
+    const saved = localStorage.getItem(COLOR_GRADE_KEY) as ColorGradePresetId | null;
+    if (saved && ['deep-cosmos', 'solar-flare', 'cryo-observatory', 'natural-imax'].includes(saved)) {
+      return saved;
+    }
+    return 'deep-cosmos';
+  });
+
   const [selectedPlanetId, setSelectedPlanetId] = useState<PlanetId>('earth');
   const [comparePlanets, setComparePlanets] = useState<PlanetId[]>(['earth', 'mars']);
+  const [teacherSlides, setTeacherSlides] = useState<TeacherSlide[]>(() => {
+    if (typeof window === 'undefined') return TEACHER_SLIDES;
+    try {
+      const saved = localStorage.getItem(TEACHER_SLIDES_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Fallback to defaults
+    }
+    return TEACHER_SLIDES;
+  });
   const [teacherSlideIndex, setTeacherSlideIndex] = useState(0);
   const [isLaserPointerActive, setIsLaserPointerActive] = useState(false);
+  const [isTeacherPresenting3D, setIsTeacherPresenting3D] = useState(false);
   const [classroomCode, setClassroomCode] = useState('ASTRO-4921');
   const [simulatedStudents] = useState<ClassroomStudent[]>(INITIAL_ROSTER);
 
@@ -144,12 +213,70 @@ export function ClassroomProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(SOUND_KEY, String(soundEnabled));
   }, [soundEnabled]);
 
+  // Persist color grading preset
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLOR_GRADE_KEY, colorGradePreset);
+    } catch {}
+  }, [colorGradePreset]);
+
   // Persist progress
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
     } catch {}
   }, [progress]);
+
+  // Persist custom teacher slides deck
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEACHER_SLIDES_KEY, JSON.stringify(teacherSlides));
+    } catch {}
+  }, [teacherSlides]);
+
+  // Cleanup transit timers on unmount
+  useEffect(() => {
+    return () => {
+      transitTimersRef.current.forEach(id => window.clearTimeout(id));
+    };
+  }, []);
+
+  const setCurrentView = (view: AppView) => {
+    if (view === currentView) return;
+
+    // Clear any in-flight timers
+    transitTimersRef.current.forEach(id => window.clearTimeout(id));
+    transitTimersRef.current = [];
+
+    const meta = VIEW_TRANSIT_LABELS[view];
+    setTransitState({
+      active: true,
+      destination: view,
+      title: meta.title,
+      subtitle: meta.subtitle,
+    });
+
+    // Respect reduced motion for fast instant switch
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    if (prefersReduced) {
+      setInternalView(view);
+      setTransitState(prev => ({ ...prev, active: false }));
+      return;
+    }
+
+    const swapTimer = window.setTimeout(() => {
+      setInternalView(view);
+    }, 160);
+
+    const endTimer = window.setTimeout(() => {
+      setTransitState(prev => ({ ...prev, active: false }));
+    }, 420);
+
+    transitTimersRef.current.push(swapTimer, endTimer);
+  };
 
   const toggleSound = () => {
     setSoundEnabled(prev => !prev);
@@ -159,6 +286,98 @@ export function ClassroomProvider({ children }: { children: ReactNode }) {
     const randomNum = Math.floor(1000 + Math.random() * 9000);
     setClassroomCode(`ASTRO-${randomNum}`);
     soundEffects.playClick();
+  };
+
+  const updateTeacherSlide = (slideIndex: number, patch: Partial<TeacherSlide>) => {
+    setTeacherSlides(prev =>
+      prev.map((slide, idx) => (idx === slideIndex ? { ...slide, ...patch } : slide))
+    );
+  };
+
+  const addTeacherSlide = () => {
+    const nextNum = teacherSlides.length + 1;
+    const newSlide: TeacherSlide = {
+      id: Date.now(),
+      title: `${nextNum}. Custom Astronomy Lesson Module`,
+      subheading: 'Interactive 3D Guided Topic',
+      targetPlanet: 'earth',
+      theme: 'terrestrial-survey',
+      talkingPoints: [
+        'Introduce core observational evidence using the 3D scene.',
+        'Guide students to inspect scale, motion, and atmospheric traits.',
+      ],
+      promptQuestion: 'Class Question: What key physical property distinguishes this cosmic body?',
+      didYouKnow: 'Tap any 3D object for 2 seconds in 3D Space to project live holographic telemetry.',
+      prerequisites: ['Basic solar system orientation'],
+      materials: [],
+      customImportant: {
+        heading: 'Key Lesson Focus',
+        content: 'Highlight essential exam takeaway or classroom safety note here.',
+        severity: 'exam-focus',
+      },
+    };
+    setTeacherSlides(prev => {
+      const next = [...prev, newSlide];
+      setTeacherSlideIndex(next.length - 1);
+      return next;
+    });
+    soundEffects.playSuccess();
+  };
+
+  const duplicateTeacherSlide = (slideIndex: number) => {
+    const src = teacherSlides[slideIndex];
+    if (!src) return;
+    const copy: TeacherSlide = {
+      ...JSON.parse(JSON.stringify(src)),
+      id: Date.now(),
+      title: `${src.title} (Copy)`,
+    };
+    setTeacherSlides(prev => {
+      const next = [...prev];
+      next.splice(slideIndex + 1, 0, copy);
+      return next;
+    });
+    setTeacherSlideIndex(slideIndex + 1);
+    soundEffects.playClick();
+  };
+
+  const deleteTeacherSlide = (slideIndex: number) => {
+    if (teacherSlides.length <= 1) return;
+    setTeacherSlides(prev => prev.filter((_, idx) => idx !== slideIndex));
+    setTeacherSlideIndex(prevIdx => Math.max(0, Math.min(prevIdx, teacherSlides.length - 2)));
+    soundEffects.playClick();
+  };
+
+  const moveTeacherSlide = (fromIndex: number, direction: 'up' | 'down') => {
+    const toIndex = direction === 'up' ? fromIndex - 1 : fromIndex + 1;
+    if (toIndex < 0 || toIndex >= teacherSlides.length) return;
+    setTeacherSlides(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    setTeacherSlideIndex(toIndex);
+    soundEffects.playClick();
+  };
+
+  const resetTeacherSlides = () => {
+    setTeacherSlides(TEACHER_SLIDES);
+    setTeacherSlideIndex(0);
+    try {
+      localStorage.removeItem(TEACHER_SLIDES_KEY);
+    } catch {}
+    soundEffects.playClick();
+  };
+
+  const importTeacherSlides = (slides: TeacherSlide[]): boolean => {
+    if (!Array.isArray(slides) || slides.length === 0) return false;
+    const valid = slides.every(s => s && typeof s.title === 'string' && Array.isArray(s.talkingPoints));
+    if (!valid) return false;
+    setTeacherSlides(slides);
+    setTeacherSlideIndex(0);
+    soundEffects.playSuccess();
+    return true;
   };
 
   // Safe computed property for explored count
@@ -319,6 +538,24 @@ export function ClassroomProvider({ children }: { children: ReactNode }) {
     soundEffects.playSuccess();
   };
 
+  const grantBonusXp = (amount: number, badgeName?: string) => {
+    if (amount <= 0 && !badgeName) return;
+    setProgress(prev => {
+      const newXp = prev.xp + Math.max(0, amount);
+      const { level, title } = calculateLevelAndTitle(newXp);
+      const newBadges = badgeName
+        ? Array.from(new Set([...prev.badges, badgeName]))
+        : prev.badges;
+      return {
+        ...prev,
+        xp: newXp,
+        level,
+        title,
+        badges: newBadges,
+      };
+    });
+  };
+
   const addStudentNote = (planetId: PlanetId, text: string) => {
     const newNote = {
       id: `note-${Date.now()}`,
@@ -362,6 +599,9 @@ export function ClassroomProvider({ children }: { children: ReactNode }) {
       value={{
         currentView,
         setCurrentView,
+        transitState,
+        colorGradePreset,
+        setColorGradePreset,
         selectedPlanetId,
         setSelectedPlanetId,
         comparePlanets,
@@ -376,6 +616,7 @@ export function ClassroomProvider({ children }: { children: ReactNode }) {
         recordArPlacement,
         recordCompareUsed,
         claimMissionReward,
+        grantBonusXp,
         addStudentNote,
         deleteStudentNote,
         resetProgress,
@@ -383,10 +624,20 @@ export function ClassroomProvider({ children }: { children: ReactNode }) {
         toggleSound,
         classroomCode,
         generateNewClassroomCode,
+        teacherSlides,
+        updateTeacherSlide,
+        addTeacherSlide,
+        duplicateTeacherSlide,
+        deleteTeacherSlide,
+        moveTeacherSlide,
+        resetTeacherSlides,
+        importTeacherSlides,
         teacherSlideIndex,
         setTeacherSlideIndex,
         isLaserPointerActive,
         setIsLaserPointerActive,
+        isTeacherPresenting3D,
+        setIsTeacherPresenting3D,
         simulatedStudents,
       }}
     >

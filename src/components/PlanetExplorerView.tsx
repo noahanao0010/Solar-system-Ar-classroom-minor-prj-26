@@ -6,9 +6,17 @@ import { useClassroom } from '../context/ClassroomContext';
 import { PLANETS_DATA, ORDERED_PLANETS } from '../data/planetsData';
 import { GALAXIES_DATA, ORDERED_GALAXIES, GalaxyInfo } from '../data/galaxiesData';
 import { PlanetId } from '../types/astronomy';
-import { getPlanetTexture, getRingTexture } from '../utils/textureGenerator';
+import { getPlanetTexture } from '../utils/textureGenerator';
 import { create3DGalaxy } from '../utils/galaxyGenerator';
+import {
+  CinematicPipeline,
+  createCinematicComposer,
+  createEnhancedPlanetAssembly,
+  createSolarCoronaGroup,
+  createSpectralStarfield,
+} from '../utils/coreAssetsEngine';
 import { soundEffects } from '../utils/soundEffects';
+import { PageShell, SegmentedTabs } from './ui/ObservatoryPrimitives';
 import {
   Volume2,
   VolumeX,
@@ -44,6 +52,7 @@ export const PlanetExplorerView: React.FC = () => {
     setCurrentView,
     addStudentNote,
     progress,
+    colorGradePreset,
   } = useClassroom();
 
   const mountRef = useRef<HTMLDivElement>(null);
@@ -79,8 +88,9 @@ export const PlanetExplorerView: React.FC = () => {
   const planetMeshRef = useRef<THREE.Mesh | null>(null);
   const interiorGroupRef = useRef<THREE.Group | null>(null);
   const atmosphereMeshRef = useRef<THREE.Mesh | null>(null);
-  const ringMeshRef = useRef<THREE.Mesh | null>(null);
   const currentGalaxyGroupRef = useRef<THREE.Group | null>(null);
+  const pipelineRef = useRef<CinematicPipeline | null>(null);
+  const coronaGroupRef = useRef<THREE.Group | null>(null);
   const animationFrameRef = useRef<number>(0);
 
   const planet = PLANETS_DATA[selectedPlanetId];
@@ -163,49 +173,28 @@ export const PlanetExplorerView: React.FC = () => {
       const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
       scene.add(ambientLight);
 
-      // Starfield
-      const starCount = isSoftwareGl ? 500 : 1200;
-      const starGeo = new THREE.BufferGeometry();
-      const starPos = new Float32Array(starCount * 3);
-      for (let i = 0; i < starCount * 3; i += 3) {
-        starPos[i] = (Math.random() - 0.5) * 100;
-        starPos[i + 1] = (Math.random() - 0.5) * 100;
-        starPos[i + 2] = (Math.random() - 0.5) * 100;
-      }
-      starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-      const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.8, transparent: true, opacity: 0.8 });
-      scene.add(new THREE.Points(starGeo, starMat));
+      // Multi-spectral Starfield
+      const starField = createSpectralStarfield(isSoftwareGl ? 600 : 1400, 120);
+      scene.add(starField);
 
-      // Planet Mesh
-      const pGeo = new THREE.SphereGeometry(1.5, 48, 48);
-      const pTex = getPlanetTexture(selectedPlanetId);
-      const pMat = new THREE.MeshStandardMaterial({
-        map: pTex,
-        roughness: 0.65,
-        metalness: 0.1,
-      });
-      const planetMesh = new THREE.Mesh(pGeo, pMat);
-      planetMesh.rotation.z = THREE.MathUtils.degToRad(planet.tiltDegrees);
+      // Enhanced Planet or Sun Mesh
+      let planetMesh: THREE.Mesh;
+      if (selectedPlanetId === 'sun') {
+        const sunGeo = new THREE.SphereGeometry(1.5, 48, 48);
+        const sunMat = new THREE.MeshBasicMaterial({
+          map: getPlanetTexture('sun'),
+          color: 0xffeedd,
+        });
+        planetMesh = new THREE.Mesh(sunGeo, sunMat);
+        const solarCorona = createSolarCoronaGroup(1.5);
+        planetMesh.add(solarCorona);
+        coronaGroupRef.current = solarCorona;
+      } else {
+        planetMesh = createEnhancedPlanetAssembly(selectedPlanetId, 1.5, 48);
+        coronaGroupRef.current = null;
+      }
       scene.add(planetMesh);
       planetMeshRef.current = planetMesh;
-
-      // Rings
-      if (planet.hasRings) {
-        const ringType = selectedPlanetId === 'uranus' ? 'uranus' : 'saturn';
-        const rGeo = new THREE.RingGeometry(2.1, 3.8, 64);
-        rGeo.rotateX(Math.PI / 2);
-        const rTex = getRingTexture(ringType);
-        const rMat = new THREE.MeshStandardMaterial({
-          map: rTex,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.9,
-          roughness: 0.6,
-        });
-        const ringMesh = new THREE.Mesh(rGeo, rMat);
-        planetMesh.add(ringMesh);
-        ringMeshRef.current = ringMesh;
-      }
 
       // Interior Layers Group
       const interiorGroup = new THREE.Group();
@@ -226,12 +215,12 @@ export const PlanetExplorerView: React.FC = () => {
         interiorGroup.add(lMesh);
       });
 
-      // Atmosphere Glow
-      const atmGeo = new THREE.SphereGeometry(1.56, 32, 32);
+      // Interactive Atmosphere Shell Toggle Layer
+      const atmGeo = new THREE.SphereGeometry(1.62, 32, 32);
       const atmMat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(planet.accentColor),
         transparent: true,
-        opacity: 0.25,
+        opacity: 0.16,
         side: THREE.BackSide,
       });
       const atmosphereMesh = new THREE.Mesh(atmGeo, atmMat);
@@ -241,12 +230,25 @@ export const PlanetExplorerView: React.FC = () => {
       // -------------------------------------------------------------
       // Galaxy 3D Scene Architecture
       // -------------------------------------------------------------
+      coronaGroupRef.current = null;
       const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
       scene.add(ambientLight);
 
       const galaxyGroup = create3DGalaxy(selectedGalaxyId, isSoftwareGl ? 8000 : 22000);
       scene.add(galaxyGroup);
       currentGalaxyGroupRef.current = galaxyGroup;
+    }
+
+    // Hardware Post-Processing Pipeline (Bloom + Filmic Color Grading)
+    if (!isSoftwareGl) {
+      pipelineRef.current = createCinematicComposer(
+        renderer,
+        scene,
+        camera,
+        container.clientWidth,
+        container.clientHeight,
+        colorGradePreset,
+      );
     }
 
     const handleResize = () => {
@@ -256,6 +258,7 @@ export const PlanetExplorerView: React.FC = () => {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      pipelineRef.current?.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
 
@@ -263,10 +266,14 @@ export const PlanetExplorerView: React.FC = () => {
     function animate() {
       animationFrameRef.current = requestAnimationFrame(animate);
       const delta = clock.getDelta();
+      const elapsed = clock.getElapsedTime();
 
       if (explorerScope === 'planets') {
         if (planetMeshRef.current) planetMeshRef.current.rotation.y += delta * 0.2;
         if (atmosphereMeshRef.current) atmosphereMeshRef.current.rotation.y += delta * 0.15;
+        if (coronaGroupRef.current?.userData?.update) {
+          coronaGroupRef.current.userData.update(elapsed);
+        }
         if (interiorGroupRef.current && interiorGroupRef.current.visible) {
           interiorGroupRef.current.rotation.y += delta * 0.2;
         }
@@ -286,13 +293,19 @@ export const PlanetExplorerView: React.FC = () => {
         camera.quaternion.multiply(_gyroQuat);
       }
 
-      renderer.render(scene, camera);
+      if (pipelineRef.current) {
+        pipelineRef.current.composer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
     }
     animate();
 
     return () => {
       cancelAnimationFrame(animationFrameRef.current);
       window.removeEventListener('resize', handleResize);
+      pipelineRef.current?.dispose();
+      pipelineRef.current = null;
       controls.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
@@ -300,6 +313,11 @@ export const PlanetExplorerView: React.FC = () => {
       }
     };
   }, [selectedPlanetId, explorerScope, selectedGalaxyId]);
+
+  // Keep post-processing LUT synchronized
+  useEffect(() => {
+    pipelineRef.current?.applyPreset(colorGradePreset);
+  }, [colorGradePreset]);
 
   // Update view mode display
   useEffect(() => {
@@ -384,44 +402,33 @@ export const PlanetExplorerView: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full pb-16 px-3 sm:px-6 lg:px-8 max-w-7xl mx-auto space-y-5 pt-4">
+    <PageShell maxWidth="7xl">
       {/* Primary Scope Toggle: Planets vs Galaxies */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-xl">
-        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950 border border-slate-800">
-          <button
-            onClick={() => {
-              soundEffects.playClick();
-              setExplorerScope('planets');
+      <div className="flex flex-wrap items-center justify-between gap-3 glass-panel p-3.5 rounded-2xl">
+        <SegmentedTabs
+          layoutId="explorer-scope-tabs"
+          value={explorerScope}
+          onChange={val => {
+            soundEffects.playClick();
+            setExplorerScope(val);
+            if (val === 'planets') {
               soundEffects.playPlanetSound(selectedPlanetId);
               soundEffects.speakPlanet(selectedPlanetId);
-            }}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-              explorerScope === 'planets'
-                ? 'bg-sky-500 text-white shadow-md shadow-sky-500/20'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Orbit className="w-4 h-4" />
-            <span>Solar System Worlds</span>
-          </button>
-
-          <button
-            onClick={() => {
-              soundEffects.playClick();
-              setExplorerScope('galaxies');
+            } else {
               soundEffects.playGalaxySound(selectedGalaxyId);
               soundEffects.speakGalaxy(selectedGalaxyId);
-            }}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-              explorerScope === 'galaxies'
-                ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-md shadow-purple-500/20'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>Deep Space Galaxies</span>
-          </button>
-        </div>
+            }
+          }}
+          accentClass={
+            explorerScope === 'galaxies'
+              ? 'bg-purple-500/25 border border-purple-400/50 shadow-sm shadow-purple-500/20'
+              : 'bg-sky-500/20 border border-sky-400/45 shadow-sm shadow-sky-500/15'
+          }
+          items={[
+            { id: 'planets', label: 'Solar System Worlds', icon: <Orbit className="w-4 h-4" /> },
+            { id: 'galaxies', label: 'Deep Space Galaxies', icon: <Sparkles className="w-4 h-4" /> },
+          ]}
+        />
 
         {explorerScope === 'planets' ? (
           <button
@@ -429,7 +436,7 @@ export const PlanetExplorerView: React.FC = () => {
               soundEffects.playClick();
               setCurrentView('cameraAR');
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-semibold text-xs shadow-md shadow-pink-600/30 whitespace-nowrap transition-all"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white font-semibold text-xs shadow-md shadow-pink-600/25 whitespace-nowrap transition-all"
           >
             <Camera className="w-4 h-4" />
             <span>Project Planet in AR</span>
@@ -440,7 +447,7 @@ export const PlanetExplorerView: React.FC = () => {
               soundEffects.playGalaxySound(selectedGalaxyId);
               soundEffects.speakGalaxy(selectedGalaxyId);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-xs border border-slate-700 shadow-md transition-all"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 font-semibold text-xs border border-slate-700/80 transition-all"
           >
             <Volume2 className="w-4 h-4" />
             <span>Replay Cosmic Voice</span>
@@ -565,86 +572,66 @@ export const PlanetExplorerView: React.FC = () => {
             {/* Galaxy Scientific Breakdown & Tabs */}
             <div className="lg:col-span-5 space-y-4">
               {/* Header Spec Card */}
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+              <div className="glass-panel rounded-2xl p-5 space-y-2.5">
+                <div className="flex items-center justify-between text-[11px] font-mono">
+                  <span className="uppercase tracking-wider text-purple-300 font-semibold">
                     {galaxy.morphology}
                   </span>
-                  <span className="text-xs text-slate-400">{galaxy.constellation}</span>
+                  <span className="text-slate-400">{galaxy.constellation}</span>
                 </div>
 
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{galaxy.name}</h1>
-                <p className="text-xs font-semibold text-amber-300">{galaxy.catalogName}</p>
+                <h1 className="font-display text-2xl sm:text-3xl font-bold text-white">{galaxy.name}</h1>
+                <p className="text-xs font-mono text-amber-300">{galaxy.catalogName}</p>
                 <p className="text-xs text-slate-300 leading-relaxed">{galaxy.overview}</p>
               </div>
 
               {/* Four Metrics Grid */}
               <div className="grid grid-cols-2 gap-2.5 text-xs">
-                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-slate-400 text-[11px]">Diameter</span>
-                  <div className="font-bold text-white text-sm mt-0.5">
+                <div className="glass-panel p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px] font-mono">Diameter</span>
+                  <div className="font-display font-bold text-white text-sm mt-0.5">
                     {galaxy.diameterLightYears.toLocaleString()} ly
                   </div>
                 </div>
 
-                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-slate-400 text-[11px]">Distance from Earth</span>
-                  <div className="font-bold text-white text-sm mt-0.5">
+                <div className="glass-panel p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px] font-mono">Distance</span>
+                  <div className="font-display font-bold text-white text-sm mt-0.5">
                     {galaxy.distanceLightYears}
                   </div>
                 </div>
 
-                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-slate-400 text-[11px]">Estimated Stars</span>
-                  <div className="font-bold text-amber-300 text-sm mt-0.5">
+                <div className="glass-panel p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px] font-mono">Estimated Stars</span>
+                  <div className="font-display font-bold text-amber-300 text-sm mt-0.5">
                     {galaxy.estimatedStars}
                   </div>
                 </div>
 
-                <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-slate-400 text-[11px]">Supermassive Black Hole</span>
-                  <div className="font-bold text-sky-300 text-sm mt-0.5 truncate">
+                <div className="glass-panel p-3 rounded-xl">
+                  <span className="text-slate-400 text-[11px] font-mono">Central Black Hole</span>
+                  <div className="font-display font-bold text-sky-300 text-sm mt-0.5 truncate">
                     {galaxy.blackHoleMass}
                   </div>
                 </div>
               </div>
 
               {/* Dissector Tabs */}
-              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3">
-                <div className="flex items-center gap-1 p-0.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
-                  <button
-                    onClick={() => setGalaxyTab('core')}
-                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
-                      galaxyTab === 'core' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Core & Black Hole
-                  </button>
-                  <button
-                    onClick={() => setGalaxyTab('arms')}
-                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
-                      galaxyTab === 'arms' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Arms & Stars
-                  </button>
-                  <button
-                    onClick={() => setGalaxyTab('halo')}
-                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
-                      galaxyTab === 'halo' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Halo & Dark Matter
-                  </button>
-                  <button
-                    onClick={() => setGalaxyTab('merger')}
-                    className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
-                      galaxyTab === 'merger' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Evolution
-                  </button>
-                </div>
+              <div className="glass-panel rounded-2xl p-4 space-y-3">
+                <SegmentedTabs
+                  layoutId="galaxy-dissector-tabs"
+                  value={galaxyTab}
+                  onChange={setGalaxyTab}
+                  accentClass="bg-purple-500/25 border border-purple-400/50"
+                  compact
+                  className="w-full flex"
+                  items={[
+                    { id: 'core', label: 'Core' },
+                    { id: 'arms', label: 'Arms' },
+                    { id: 'halo', label: 'Halo' },
+                    { id: 'merger', label: 'Evolution' },
+                  ]}
+                />
 
                 {galaxyTab === 'core' && (
                   <div className="space-y-2 text-xs text-slate-300 animate-in fade-in duration-150">
@@ -975,6 +962,6 @@ export const PlanetExplorerView: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 };

@@ -3,20 +3,44 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { Suspense, lazy, useRef, useState, useEffect } from 'react';
+import { MotionConfig } from 'motion/react';
 import { ClassroomProvider, useClassroom } from './context/ClassroomContext';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
-import { SolarSystemView } from './components/SolarSystemView';
-import { PlanetExplorerView } from './components/PlanetExplorerView';
-import { CompareView } from './components/CompareView';
-import { MissionsView } from './components/MissionsView';
-import { QuizCenterView } from './components/QuizCenterView';
-import { CameraARView } from './components/CameraARView';
-import { TeacherModeView } from './components/TeacherModeView';
-import { ProgressView } from './components/ProgressView';
-import { MyWebARHubView } from './components/MyWebARHubView';
-import { Trash2, PenTool } from 'lucide-react';
+import { SpaceTransitPortal } from './components/SpaceTransitPortal';
+import { CommandPalette } from './components/CommandPalette';
+import {
+  ObservatoryErrorBoundary,
+  ViewLoadingFallback,
+} from './components/ui/ObservatoryPrimitives';
+import { Trash2 } from 'lucide-react';
+
+// Code-split heavy WebGL / Three.js & secondary feature modules for fast initial load
+const SolarSystemView = lazy(() =>
+  import('./components/SolarSystemView').then(m => ({ default: m.SolarSystemView })),
+);
+const PlanetExplorerView = lazy(() =>
+  import('./components/PlanetExplorerView').then(m => ({ default: m.PlanetExplorerView })),
+);
+const CompareView = lazy(() =>
+  import('./components/CompareView').then(m => ({ default: m.CompareView })),
+);
+const MissionsView = lazy(() =>
+  import('./components/MissionsView').then(m => ({ default: m.MissionsView })),
+);
+const QuizCenterView = lazy(() =>
+  import('./components/QuizCenterView').then(m => ({ default: m.QuizCenterView })),
+);
+const CameraARView = lazy(() =>
+  import('./components/CameraARView').then(m => ({ default: m.CameraARView })),
+);
+const TeacherModeView = lazy(() =>
+  import('./components/TeacherModeView').then(m => ({ default: m.TeacherModeView })),
+);
+const ProgressView = lazy(() =>
+  import('./components/ProgressView').then(m => ({ default: m.ProgressView })),
+);
 
 function LaserPointerLayer() {
   const { isLaserPointerActive, setIsLaserPointerActive } = useClassroom();
@@ -98,7 +122,7 @@ function LaserPointerLayer() {
         className="w-full h-full pointer-events-auto cursor-crosshair"
       />
 
-      <div className="absolute bottom-6 right-6 pointer-events-auto flex items-center gap-2 bg-slate-900/90 border border-slate-700 p-2 rounded-2xl shadow-2xl">
+      <div className="absolute bottom-6 right-6 pointer-events-auto flex items-center gap-2 glass-panel-elevated p-2 rounded-2xl">
         <div className="text-xs text-rose-300 font-bold px-2 flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
           <span>Laser Annotation Mode</span>
@@ -122,32 +146,60 @@ function LaserPointerLayer() {
 }
 
 function MainContent() {
-  const { currentView } = useClassroom();
+  const { currentView, setCurrentView } = useClassroom();
 
   return (
-    <main className="flex-1 overflow-y-auto">
-      {currentView === 'dashboard' && <DashboardView />}
-      {currentView === 'solarSystem' && <SolarSystemView />}
-      {currentView === 'explorer' && <PlanetExplorerView />}
-      {currentView === 'compare' && <CompareView />}
-      {currentView === 'missions' && <MissionsView />}
-      {currentView === 'quiz' && <QuizCenterView />}
-      {currentView === 'cameraAR' && <CameraARView />}
-      {currentView === 'mywebarHub' && <MyWebARHubView />}
-      {currentView === 'teacher' && <TeacherModeView />}
-      {currentView === 'progress' && <ProgressView />}
+    <main className="flex-1 overflow-y-auto relative">
+      <ObservatoryErrorBoundary onRecover={() => setCurrentView('dashboard')}>
+        <Suspense fallback={<ViewLoadingFallback />}>
+          <div key={currentView} className="min-h-full animate-stage-enter">
+            {currentView === 'dashboard' && <DashboardView />}
+            {currentView === 'solarSystem' && <SolarSystemView />}
+            {currentView === 'explorer' && <PlanetExplorerView />}
+            {currentView === 'compare' && <CompareView />}
+            {currentView === 'missions' && <MissionsView />}
+            {currentView === 'quiz' && <QuizCenterView />}
+            {currentView === 'cameraAR' && <CameraARView />}
+            {currentView === 'teacher' && <TeacherModeView />}
+            {currentView === 'progress' && <ProgressView />}
+          </div>
+        </Suspense>
+      </ObservatoryErrorBoundary>
     </main>
+  );
+}
+
+function AppShell() {
+  const [commandOpen, setCommandOpen] = useState(false);
+
+  useEffect(() => {
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCommandOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
+  }, []);
+
+  return (
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#030612] text-slate-100 antialiased font-sans">
+      <Navbar onOpenCommandPalette={() => setCommandOpen(true)} />
+      <MainContent />
+      <LaserPointerLayer />
+      <SpaceTransitPortal />
+      <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
+    </div>
   );
 }
 
 export default function App() {
   return (
-    <ClassroomProvider>
-      <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 antialiased font-sans">
-        <Navbar />
-        <MainContent />
-        <LaserPointerLayer />
-      </div>
-    </ClassroomProvider>
+    <MotionConfig reducedMotion="user">
+      <ClassroomProvider>
+        <AppShell />
+      </ClassroomProvider>
+    </MotionConfig>
   );
 }

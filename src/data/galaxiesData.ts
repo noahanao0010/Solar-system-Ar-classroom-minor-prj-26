@@ -312,6 +312,78 @@ export const GALAXIES_DATA: Record<string, GalaxyInfo> = {
       'Star R136a1 inside the LMC is over 250 times more massive than our Sun and shines 8 million times brighter.',
     ],
   },
+
+  'cosmic-web': {
+    id: 'cosmic-web',
+    name: 'Intergalactic Cosmic Web',
+    catalogName: 'Universe Large-Scale Structure',
+    type: 'Filamentary Dark Matter & Baryon Web',
+    morphology: 'Cosmic Superclusters & Voids',
+    constellation: 'Omnidirectional Extragalactic',
+    distanceLightYears: 'Spanning billions of light-years',
+    diameterLightYears: 10000000000,
+    estimatedStars: 'Hundreds of Trillions of Galaxies',
+    blackHoleMass: 'Cosmic Network SMBHs',
+    accentColor: '#c084fc',
+    color: '#9333ea',
+    tagline: 'The colossal scaffolding of dark matter filaments, galaxy superclusters, and immense cosmic voids',
+    overview:
+      'The cosmic web is the largest known structure in the universe. Gravitational forces from primordial dark matter sculpted normal baryonic matter into vast interconnected filaments spanning billions of light-years, studded with galaxy clusters and surrounded by cavernous empty voids.',
+    keyFeatures: [
+      'Dense galaxy supercluster nodes (Laniakea, Shapley, Coma, Virgo) anchored by massive gravitational wells.',
+      'Luminous intergalactic filaments composed of warm-hot gas and dark matter bridges.',
+      'Colossal cosmic voids (such as the Boötes Void) spanning up to 300 million light-years of nearly empty space.',
+      'Dynamic accretion flows feeding young galaxies along filamentary superhighways.',
+    ],
+    scientificDetails: {
+      armCount: 8,
+      rotationVelocity: 'Cosmological Hubble flow expansion',
+      stellarHalo: 'Boundless intergalactic medium (IGM) containing warm-hot baryonic gas',
+      metallicity: 'Primordial hydrogen and helium gas enriched by stellar galactic winds',
+      mergerStatus: 'Continual hierarchical clustering driven by dark matter gravity and dark energy',
+    },
+    funFacts: [
+      'Over 85% of all matter in the cosmic web is invisible dark matter that interacts only through gravity.',
+      'If you removed the galaxies, cosmic voids would make up over 60% of the entire volume of our universe.',
+      'Our home Milky Way belongs to the Laniakea Supercluster, a titanic cosmic web lobe containing over 100,000 galaxies.',
+    ],
+  },
+
+  'observable-universe': {
+    id: 'observable-universe',
+    name: 'Observable Universe',
+    catalogName: 'Cosmic Horizon / Hubble Volume',
+    type: 'Cosmological Horizon Bubble',
+    morphology: 'Co-moving Expanding Sphere',
+    constellation: '360° Omnidirectional Cosmic Horizon',
+    distanceLightYears: '46.5 Billion ly (Horizon Radius)',
+    diameterLightYears: 93000000000,
+    estimatedStars: '~2 Trillion Galaxies (~10²⁴ Stars)',
+    blackHoleMass: 'Cosmological Total',
+    accentColor: '#f43f5e',
+    color: '#e11d48',
+    tagline: 'The entire observable universe bounded by the Cosmic Microwave Background from the Big Bang',
+    overview:
+      'The observable universe encompasses all physical matter and energy whose light has had time to reach Earth since the cosmic dawn 13.8 billion years ago. Due to cosmic expansion, its current co-moving diameter is roughly 93 billion light-years, bordered by the glowing veil of the Cosmic Microwave Background.',
+    keyFeatures: [
+      'Co-moving diameter of approximately 93 billion light-years (28.5 gigaparsecs).',
+      'The Cosmic Microwave Background (CMB) boundary—relic photons from 380,000 years after the Big Bang.',
+      'Estimated to house upwards of 2 trillion distinct galaxies across cosmic time.',
+      'Structured in distinct cosmic epochs: Dark Ages, Reionization, Peak Star Formation, and Dark Energy era.',
+    ],
+    scientificDetails: {
+      armCount: 0,
+      rotationVelocity: 'Uniform isotropic expansion (Hubble Parameter ~70 km/s/Mpc)',
+      stellarHalo: 'Cosmological Horizon determined by the speed of light and age of universe',
+      metallicity: 'Universal average baryon fraction ~5% normal matter, ~27% dark matter, ~68% dark energy',
+      mergerStatus: 'Accelerating cosmic expansion driven by dark energy (Lambda-CDM model)',
+    },
+    funFacts: [
+      'Every observer in the cosmos sits at the exact center of their own unique observable universe horizon.',
+      'Because space itself expands faster than light at vast distances, galaxies beyond our cosmic horizon will forever disappear from view.',
+      'The temperature of the outer CMB boundary is a chilling 2.725 Kelvin (-270.4°C) with fluctuations of just microkelvins.',
+    ],
+  },
 };
 
 export const ORDERED_GALAXIES = [
@@ -323,4 +395,6 @@ export const ORDERED_GALAXIES = [
   'cartwheel',
   'cigar',
   'large-magellanic-cloud',
+  'cosmic-web',
+  'observable-universe',
 ];
